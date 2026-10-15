@@ -1,0 +1,158 @@
+[
+  {
+    "student": "Arseniy",
+    "topic_id": "python",
+    "topic_title": "Основы Python",
+    "score": 6,
+    "max_score": 8,
+    "percent": 75.0,
+    "duration_sec": 83,
+    "finished_at": "2026-10-14T14:26:06+00:00",
+    "review": [
+      {
+        "id": "py-1",
+        "text": "Какой тип имеет выражение type([1, 2, 3]) в Python?",
+        "is_correct": true
+      },
+      {
+        "id": "py-2",
+        "text": "Что выведет код: print(2 ** 3)?",
+        "is_correct": true
+      },
+      {
+        "id": "py-3",
+        "text": "Выберите изменяемые (mutable) типы данных в Python.",
+        "is_correct": false
+      },
+      {
+        "id": "py-4",
+        "text": "Какой оператор используется для целочисленного деления?",
+        "is_correct": false
+      },
+      {
+        "id": "py-5",
+        "text": "Что делает метод list.append(x)?",
+        "is_correct": true
+      },
+      {
+        "id": "py-6",
+        "text": "Какие конструкции относятся к циклам в Python?",
+        "is_correct": true
+      },
+      {
+        "id": "py-7",
+        "text": "Что вернёт выражение bool([])?",
+        "is_correct": true
+      },
+      {
+        "id": "py-8",
+        "text": "Для чего используется ключевое слово def?",
+        "is_correct": true
+      }
+    ]
+  },
+  {
+    "student": "Bagetnost'",
+    "topic_id": "architecture",
+    "topic_title": "Архитектура компьютера",
+    "score": 4,
+    "max_score": 8,
+    "percent": 50.0,
+    "duration_sec": 80,
+    "finished_at": "2026-10-14T14:29:02+00:00",
+    "review": [
+      {
+        "id": "arch-1",
+        "text": "Какой принцип фон Неймана описывает хранение программ и данных в одной памяти?",
+        "is_correct": true
+      },
+      {
+        "id": "arch-2",
+        "text": "Что означает аббревиатура ALU в составе процессора?",
+        "is_correct": true
+      },
+      {
+        "id": "arch-3",
+        "text": "Выберите устройства, относящиеся к оперативной памяти компьютера.",
+        "is_correct": false
+      },
+      {
+        "id": "arch-4",
+        "text": "Для чего нужна шина данных (data bus)?",
+        "is_correct": true
+      },
+      {
+        "id": "arch-5",
+        "text": "Какой вид памяти является энергозависимым?",
+        "is_correct": false
+      },
+      {
+        "id": "arch-6",
+        "text": "Какие компоненты входят в классическую архитектуру фон Неймана?",
+        "is_correct": false
+      },
+      {
+        "id": "arch-7",
+        "text": "Что такое тактовая частота процессора?",
+        "is_correct": true
+      },
+      {
+        "id": "arch-8",
+        "text": "ПЗУ (ROM) в первую очередь используется для хранения:",
+        "is_correct": false
+      }
+    ]
+  },
+  {
+    "student": "Bagetnost'",
+    "topic_id": "numsys",
+    "topic_title": "Системы счисления",
+    "score": 3,
+    "max_score": 8,
+    "percent": 37.5,
+    "duration_sec": 47,
+    "finished_at": "2026-10-14T14:34:48+00:00",
+    "review": [
+      {
+        "id": "ns-1",
+        "text": "Чему равно двоичное число 1010₂ в десятичной системе?",
+        "is_correct": true
+      },
+      {
+        "id": "ns-2",
+        "text": "Какое основание у шестнадцатеричной системы счисления?",
+        "is_correct": true
+      },
+      {
+        "id": "ns-3",
+        "text": "Выберите корректные представления числа 15₁₀.",
+        "is_correct": false
+      },
+      {
+        "id": "ns-4",
+        "text": "Сколько различных цифр используется в восьмеричной системе?",
+        "is_correct": true
+      },
+      {
+        "id": "ns-5",
+        "text": "Переведите 2A₁₆ в десятичную систему.",
+        "is_correct": false
+      },
+      {
+        "id": "ns-6",
+        "text": "Какие системы счисления относятся к позиционным?",
+        "is_correct": false
+      },
+      {
+        "id": "ns-7",
+        "text": "Чему равен вес младшего разряда в двоичном числе?",
+        "is_correct": false
+      },
+      {
+        "id": "ns-8",
+        "text": "Как быстро перевести 110110₂ в восьмеричную систему?",
+        "is_correct": false
+      }
+    ]
+  }
+]

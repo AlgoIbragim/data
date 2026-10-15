@@ -1,0 +1,481 @@
+/* ── Background ─────────────────────────────────────────────────────── */
+.bg-grid {
+  background-image:
+    radial-gradient(circle at 20% 20%, rgba(37, 99, 235, 0.08), transparent 40%),
+    radial-gradient(circle at 80% 0%, rgba(14, 165, 233, 0.08), transparent 35%);
+}
+
+/* ── Navigation ────────────────────────────────────────────────────── */
+.nav-btn {
+  border-radius: 0.9rem;
+  padding: 0.5rem 0.9rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #475569;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.nav-btn:hover {
+  background: #f1f5f9;
+}
+
+.nav-btn-active {
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+/* ── Buttons ───────────────────────────────────────────────────────── */
+.btn-primary,
+.btn-accent,
+.btn-ghost,
+.btn-danger {
+  border-radius: 0.9rem;
+  padding: 0.65rem 1.1rem;
+  font-size: 0.875rem;
+  font-weight: 700;
+  transition: transform 0.12s ease, box-shadow 0.12s ease, background-color 0.12s ease;
+}
+
+.btn-primary {
+  background: #2563eb;
+  color: #fff;
+}
+
+.btn-primary:hover {
+  background: #1d4ed8;
+}
+
+.btn-accent {
+  background: #0f172a;
+  color: #fff;
+}
+
+.btn-accent:hover {
+  background: #1e293b;
+}
+
+.btn-ghost {
+  background: #f1f5f9;
+  color: #0f172a;
+}
+
+.btn-ghost:hover {
+  background: #e2e8f0;
+}
+
+.btn-danger {
+  background: #ef4444;
+  color: #fff;
+}
+
+.btn-danger:hover {
+  background: #dc2626;
+}
+
+.btn-sm {
+  padding: 0.4rem 0.75rem;
+  font-size: 0.75rem;
+  border-radius: 0.7rem;
+}
+
+.btn-primary:disabled,
+.btn-ghost:disabled,
+.btn-danger:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+/* ── Stat Card ─────────────────────────────────────────────────────── */
+.stat-card {
+  border-radius: 1rem;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  padding: 1rem;
+}
+
+/* ── Quiz Options ──────────────────────────────────────────────────── */
+.option {
+  display: flex;
+  width: 100%;
+  cursor: pointer;
+  align-items: flex-start;
+  gap: 0.75rem;
+  border-radius: 1rem;
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  padding: 0.9rem 1rem;
+  text-align: left;
+  transition: border-color 0.12s ease, background-color 0.12s ease;
+}
+
+.option:hover {
+  border-color: #93c5fd;
+}
+
+.option-selected {
+  border-color: #2563eb;
+  background: #eff6ff;
+}
+
+.option-correct {
+  border-color: #16a34a;
+  background: #f0fdf4;
+}
+
+.option-wrong {
+  border-color: #dc2626;
+  background: #fef2f2;
+}
+
+/* ── Timer ──────────────────────────────────────────────────────────── */
+.timer-ok {
+  background: #ecfdf5;
+  color: #047857;
+}
+
+.timer-warn {
+  background: #fff7ed;
+  color: #c2410c;
+}
+
+.timer-hot {
+  background: #fef2f2;
+  color: #b91c1c;
+  animation: pulse 1s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  50% { opacity: 0.7; }
+}
+
+/* ── Bar ───────────────────────────────────────────────────────────── */
+.bar {
+  height: 0.5rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e2e8f0;
+}
+
+.bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: #2563eb;
+  transition: width 0.6s ease;
+}
+
+/* ── Forms ──────────────────────────────────────────────────────────── */
+.field {
+  width: 100%;
+  border-radius: 0.9rem;
+  border: 1px solid #e2e8f0;
+  padding: 0.65rem 0.9rem;
+  font-size: 0.875rem;
+  outline: none;
+}
+
+.field:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.15);
+}
+
+/* ── Auth Tabs ─────────────────────────────────────────────────────── */
+.auth-tab {
+  border-radius: 0.8rem;
+  padding: 0.55rem 0.75rem;
+  color: #475569;
+}
+
+.auth-tab-active {
+  background: #fff;
+  color: #1d4ed8;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+}
+
+.role-card {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 0.9rem;
+  padding: 0.7rem 0.85rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* ── Hotkeys ───────────────────────────────────────────────────────── */
+.hotkeys {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.25rem;
+  font-size: 0.75rem;
+  color: #64748b;
+}
+
+kbd {
+  display: inline-block;
+  min-width: 1.4rem;
+  border: 1px solid #cbd5e1;
+  border-bottom-width: 2px;
+  border-radius: 0.4rem;
+  background: #fff;
+  padding: 0.05rem 0.35rem;
+  font-family: ui-monospace, monospace;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: #0f172a;
+  text-align: center;
+}
+
+.keycap {
+  display: inline-flex;
+  height: 1.4rem;
+  min-width: 1.4rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.4rem;
+  background: #e2e8f0;
+  font-size: 0.7rem;
+  font-weight: 800;
+  color: #334155;
+}
+
+/* ── Modal ──────────────────────────────────────────────────────────── */
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.45);
+  padding: 1rem;
+}
+
+.modal-card {
+  width: min(28rem, 100%);
+  border-radius: 1.5rem;
+  background: #fff;
+  padding: 1.5rem;
+  box-shadow: 0 20px 50px rgba(15, 23, 42, 0.2);
+}
+
+.modal-card-lg {
+  width: min(40rem, 100%);
+  max-height: 85vh;
+  overflow-y: auto;
+}
+
+/* ── Teacher Panel Tabs ────────────────────────────────────────────── */
+.teacher-tab {
+  padding: 0.55rem 1rem;
+  border-radius: 0.8rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #64748b;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.teacher-tab:hover {
+  color: #334155;
+  background: #f1f5f9;
+}
+
+.teacher-tab-active {
+  color: #1d4ed8;
+  background: #eff6ff;
+}
+
+/* ── Difficulty Badges ─────────────────────────────────────────────── */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.15rem 0.55rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.badge-easy {
+  background: #ecfdf5;
+  color: #047857;
+}
+
+.badge-medium {
+  background: #fff7ed;
+  color: #c2410c;
+}
+
+.badge-hard {
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.badge-teacher {
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.badge-student {
+  background: #f0fdf4;
+  color: #15803d;
+}
+
+/* ── Competency Map ────────────────────────────────────────────────── */
+.gauge-container {
+  position: relative;
+  width: 160px;
+  height: 160px;
+}
+
+.gauge-svg {
+  transform: rotate(-90deg);
+}
+
+.gauge-bg {
+  fill: none;
+  stroke: #e2e8f0;
+  stroke-width: 12;
+}
+
+.gauge-fill {
+  fill: none;
+  stroke-width: 12;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 1s ease, stroke 0.4s ease;
+}
+
+.gauge-label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.competency-bar {
+  height: 0.625rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e2e8f0;
+}
+
+.competency-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.8s ease;
+}
+
+.level-excellent > span { background: #16a34a; }
+.level-good > span { background: #2563eb; }
+.level-attention > span { background: #f59e0b; }
+.level-weak > span { background: #ef4444; }
+
+.trend-icon {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.75rem;
+  font-weight: 700;
+  gap: 0.15rem;
+}
+
+.trend-improving { color: #16a34a; }
+.trend-declining { color: #ef4444; }
+.trend-stable { color: #64748b; }
+.trend-new { color: #8b5cf6; }
+
+/* ── Explanation Toggle ────────────────────────────────────────────── */
+.explanation-toggle {
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #2563eb;
+  padding: 0.35rem 0;
+  transition: color 0.15s ease;
+}
+
+.explanation-toggle:hover {
+  color: #1d4ed8;
+}
+
+.explanation-content {
+  overflow: hidden;
+  max-height: 0;
+  opacity: 0;
+  transition: max-height 0.35s ease, opacity 0.25s ease, margin 0.25s ease;
+  margin-top: 0;
+}
+
+.explanation-content.open {
+  max-height: 300px;
+  opacity: 1;
+  margin-top: 0.75rem;
+}
+
+.explanation-box {
+  border-radius: 0.75rem;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  padding: 0.75rem 1rem;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: #1e40af;
+}
+
+/* ── Import/Export ──────────────────────────────────────────────────── */
+.action-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* ── Animations ────────────────────────────────────────────────────── */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.fade-in {
+  animation: fadeIn 0.3s ease forwards;
+}
+
+@keyframes scaleIn {
+  from { opacity: 0; transform: scale(0.95); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+.scale-in {
+  animation: scaleIn 0.25s ease forwards;
+}
+
+/* ── Scrollbar (for modals) ────────────────────────────────────────── */
+.modal-card-lg::-webkit-scrollbar {
+  width: 6px;
+}
+
+.modal-card-lg::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.modal-card-lg::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 999px;
+}
+
+/* ── Misc ──────────────────────────────────────────────────────────── */
+.truncate-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}

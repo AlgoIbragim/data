@@ -1,0 +1,47 @@
+Python cache
+
+pycache/ .py[codz] $py.class
+
+Virtual environments
+
+.venv/ venv/ env/ ENV/ env.bak/ venv.bak/
+
+Secrets and environment variables
+
+.env .env.* !.env.example data/secret.key
+
+Application data and database
+
+data/attempts.json data/attempts.tmp data/infotrainer.db
+
+Python build and distribution
+
+build/ dist/ *.egg-info/ .eggs/ wheels/ .Python
+
+Testing and coverage
+
+.pytest_cache/ .coverage .coverage.* htmlcov/ .tox/ .nox/ .hypothesis/ .cache/
+
+Type checking and linting
+
+.mypycache/ .dmypy.json .ruffcache/ .pyre/ .pytype/
+
+Logs and temporary files
+
+.log .tmp tempCodeRunnerFile.py
+
+IDE
+
+.idea/ .vscode/
+
+Jupyter
+
+.ipynb_checkpoints/
+
+Packaging tools
+
+.pip-wheel-metadata/ .installed.cfg MANIFEST
+
+Documentation build
+
+docs/_build/ site/

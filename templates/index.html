@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ИнфоТренер — тренажёр по информатике</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { sans: ["Manrope", "system-ui", "sans-serif"] },
+          colors: {
+            brand: { 50: "#eef4ff", 500: "#2563eb", 600: "#1d4ed8", 700: "#1e40af" }
+          }
+        }
+      }
+    };
+  </script>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}" />
+</head>
+<body class="min-h-screen bg-slate-50 text-slate-900 antialiased">
+  <div class="pointer-events-none fixed inset-0 bg-grid"></div>
+
+  <!-- Шапка сайта (sticky top bar) -->
+  <header class="sticky top-0 z-20 border-b border-slate-200/80 bg-white/80 backdrop-blur">
+    <div class="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
+      <button id="logo-btn" class="flex items-center gap-3 text-left" type="button">
+        <span class="flex h-10 w-10 items-center justify-center rounded-xl bg-brand-600 text-white shadow-sm">
+          <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M4 19h16M7 16V8m5 8V5m5 11v-6" stroke-linecap="round" />
+          </svg>
+        </span>
+        <span>
+          <span class="block text-sm font-extrabold tracking-tight" data-i18n="app_name">ИнфоТренер</span>
+          <span class="block text-xs text-slate-500" data-i18n="app_tagline">Тренажёр-тестировщик по информатике</span>
+        </span>
+      </button>
+
+      <div class="flex items-center gap-2 sm:gap-3">
+        <!-- Переключатель языка -->
+        <div class="flex items-center rounded-xl bg-slate-100 p-1 text-xs font-bold shadow-inner">
+          <button id="lang-ru" type="button" class="lang-btn lang-btn-active rounded-lg px-2.5 py-1 text-brand-700 bg-white shadow-sm transition">РУС</button>
+          <button id="lang-kk" type="button" class="lang-btn rounded-lg px-2.5 py-1 text-slate-600 hover:text-slate-900 transition">ҚАЗ</button>
+        </div>
+
+        <nav id="main-nav" class="hidden items-center gap-2 sm:flex">
+          <button id="nav-home" class="nav-btn" type="button" data-i18n="nav_topics">Темы</button>
+          <button id="nav-teacher" class="nav-btn hidden" type="button" data-i18n="nav_admin">Админка</button>
+        </nav>
+        <div id="user-box" class="hidden items-center gap-2">
+          <span id="user-chip" class="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600"></span>
+          <button id="btn-logout" class="nav-btn" type="button" data-i18n="btn_logout">Выйти</button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="relative mx-auto max-w-6xl px-4 py-8 sm:px-6 sm:py-10">
+    <!-- VIEW 1: Авторизация и регистрация -->
+    <section id="view-auth" class="mx-auto max-w-md">
+      <div class="mb-6 text-center">
+        <h1 id="auth-heading" class="text-2xl font-extrabold" data-i18n="auth_title_login">Вход в систему</h1>
+        <p class="mt-1 text-sm text-slate-500" data-i18n="auth_desc">Ученик попадает к тестам, преподаватель — в админку.</p>
+      </div>
+      <div class="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+        <div class="mb-5 grid grid-cols-2 rounded-2xl bg-slate-100 p-1 text-sm font-semibold">
+          <button id="tab-login" class="auth-tab auth-tab-active" type="button" data-i18n="tab_login">Вход</button>
+          <button id="tab-register" class="auth-tab" type="button" data-i18n="tab_register">Регистрация</button>
+        </div>
+        <p id="auth-error" class="mb-4 hidden rounded-xl bg-rose-50 px-3 py-2 text-sm font-medium text-rose-700"></p>
+        <form id="auth-form" class="space-y-4">
+          <div>
+            <label class="text-sm font-semibold" for="auth-username" data-i18n="label_username">Логин</label>
+            <input id="auth-username" autocomplete="username" required maxlength="32"
+              class="field mt-1" data-i18n-placeholder="placeholder_username" placeholder="student" />
+          </div>
+          <div>
+            <label class="text-sm font-semibold" for="auth-password" data-i18n="label_password">Пароль</label>
+            <input id="auth-password" type="password" autocomplete="current-password" required
+              class="field mt-1" data-i18n-placeholder="placeholder_password" placeholder="Не менее 8 символов" />
+            <p id="password-hint" class="mt-2 hidden text-xs leading-relaxed text-slate-500" data-i18n="password_hint">
+              Минимум 8 символов, цифра, строчная и заглавная буква.
+            </p>
+          </div>
+          <div id="role-box" class="hidden">
+            <p class="mb-2 text-sm font-semibold" data-i18n="label_role">Роль</p>
+            <div class="grid grid-cols-2 gap-2">
+              <label class="role-card">
+                <input type="radio" name="role" value="student" checked />
+                <span data-i18n="role_card_student">Ученик</span>
+              </label>
+              <label class="role-card">
+                <input type="radio" name="role" value="teacher" />
+                <span data-i18n="role_card_teacher">Преподаватель</span>
+              </label>
+            </div>
+          </div>
+          <button id="auth-submit" class="btn-primary w-full" type="submit" data-i18n="btn_login">Войти</button>
+        </form>
+        <p class="mt-4 text-center text-xs text-slate-400" data-i18n="demo_hint">
+          Демо: <code>student / Student123</code> · <code>teacher / Teacher123</code>
+        </p>
+      </div>
+    </section>
+
+    <!-- VIEW 2: Панель ученика -->
+    <section id="view-home" class="hidden space-y-8">
+      <!-- Баннер с горячими клавишами -->
+      <div class="overflow-hidden rounded-3xl bg-gradient-to-br from-slate-900 via-blue-900 to-brand-700 p-8 text-white shadow-xl sm:p-10">
+        <p class="mb-3 inline-flex rounded-full bg-white/10 px-3 py-1 text-xs font-semibold tracking-wide" data-i18n="hero_badge">Панель ученика</p>
+        <h1 class="max-w-2xl text-3xl font-extrabold leading-tight sm:text-4xl" data-i18n="hero_title">Выберите тему и пройдите тест</h1>
+        <p class="mt-3 max-w-xl text-sm leading-relaxed text-blue-100 sm:text-base" data-i18n="hero_desc">
+          Одиночный и множественный выбор, таймер и подробный разбор ответов после отправки.
+          Во время теста используйте горячие клавиши: 1–4 для выбора ответа, Enter для перехода к следующему вопросу и Esc для выхода.
+        </p>
+      </div>
+
+      <!-- Сетка тем -->
+      <div>
+        <div class="mb-4 flex items-center justify-between">
+          <h2 class="text-lg font-bold" data-i18n="topics_heading">Темы тестирования</h2>
+        </div>
+        <div id="topics-grid" class="grid gap-4 sm:grid-cols-2"></div>
+      </div>
+
+      <!-- Карта компетенций -->
+      <div id="competency-section" class="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
+        <div class="mb-6">
+          <p class="text-xs font-semibold uppercase tracking-wider text-brand-600" data-i18n="competency_badge">Аналитика прогресса</p>
+          <h2 class="text-xl font-extrabold sm:text-2xl" data-i18n="competency_title">Карта компетенций</h2>
+          <p class="mt-1 text-sm text-slate-500" data-i18n="competency_desc">Диагностика уровня знаний по темам, сильные стороны и индивидуальные рекомендации</p>
+        </div>
+
+        <div class="grid gap-6 lg:grid-cols-3">
+          <!-- Общий балл: Круговой индикатор SVG -->
+          <div class="flex flex-col items-center justify-center rounded-2xl bg-slate-50 p-6 text-center">
+            <div class="relative flex h-40 w-40 items-center justify-center">
+              <svg class="h-full w-full -rotate-90 transform" viewBox="0 0 120 120">
+                <circle cx="60" cy="60" r="48" fill="none" stroke="#e2e8f0" stroke-width="10" />
+                <circle id="gauge-circle" cx="60" cy="60" r="48" fill="none" stroke="#2563eb" stroke-width="10"
+                  stroke-linecap="round" stroke-dasharray="301.59" stroke-dashoffset="301.59"
+                  class="transition-all duration-700 ease-out" />
+              </svg>
+              <div class="absolute inset-0 flex flex-col items-center justify-center">
+                <span id="gauge-text" class="text-3xl font-extrabold text-slate-800">0%</span>
+                <span class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider" data-i18n="gauge_label">Общий балл</span>
+              </div>
+            </div>
+            <p class="mt-4 text-xs font-medium text-slate-500" data-i18n="gauge_sub">Средний показатель освоения тем курса</p>
+          </div>
+
+          <!-- Прогресс по темам -->
+          <div class="rounded-2xl bg-slate-50 p-6 lg:col-span-2">
+            <h3 class="text-sm font-bold text-slate-800" data-i18n="competency_topics_title">Уровень по темам</h3>
+            <div id="competency-topics" class="mt-4 space-y-3"></div>
+          </div>
+        </div>
+
+        <!-- Сильные/слабые стороны и рекомендации -->
+        <div class="mt-6 grid gap-6 md:grid-cols-2">
+          <div class="rounded-2xl border border-slate-100 bg-slate-50/70 p-5">
+            <h4 class="text-xs font-bold uppercase tracking-wider text-emerald-700" data-i18n="competency_strengths_title">Сильные стороны</h4>
+            <div id="competency-strengths" class="mt-3 flex flex-wrap gap-2"></div>
+
+            <h4 class="mt-5 text-xs font-bold uppercase tracking-wider text-amber-700" data-i18n="competency_weaknesses_title">Темы для повторения</h4>
+            <div id="competency-weaknesses" class="mt-3 flex flex-wrap gap-2"></div>
+          </div>
+
+          <div class="rounded-2xl border border-slate-100 bg-slate-50/70 p-5">
+            <h4 class="text-xs font-bold uppercase tracking-wider text-brand-700" data-i18n="competency_recs_title">Персональные рекомендации</h4>
+            <ul id="competency-recs" class="mt-3 space-y-2 text-sm text-slate-600"></ul>
+          </div>
+        </div>
+      </div>
+
+      <!-- Таблица "Мои результаты" -->
+      <div class="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+        <h3 class="mb-4 text-lg font-bold" data-i18n="my_results_title">Мои результаты</h3>
+        <div class="overflow-x-auto">
+          <table class="w-full min-w-[540px] text-left text-sm">
+            <thead class="text-xs uppercase text-slate-500">
+              <tr>
+                <th class="pb-2 pr-3" data-i18n="th_topic">Тема</th>
+                <th class="pb-2 pr-3" data-i18n="th_score">Балл</th>
+                <th class="pb-2 pr-3" data-i18n="th_percent">%</th>
+                <th class="pb-2" data-i18n="th_time">Время</th>
+              </tr>
+            </thead>
+            <tbody id="my-results"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- VIEW 3: Прохождение теста (Quiz) -->
+    <section id="view-quiz" class="hidden">
+      <div class="mb-5 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p id="quiz-kicker" class="text-xs font-semibold uppercase tracking-wider text-brand-600" data-i18n="quiz_kicker">Тестирование</p>
+          <h2 id="quiz-title" class="text-2xl font-extrabold"></h2>
+        </div>
+        <div id="quiz-timer" class="timer-ok rounded-2xl px-4 py-2 text-lg font-extrabold tabular-nums">00:00</div>
+      </div>
+      <div class="mb-5 h-2 overflow-hidden rounded-full bg-slate-200">
+        <div id="quiz-progress" class="h-full rounded-full bg-brand-600 transition-all"></div>
+      </div>
+      <article class="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
+        <div class="mb-4 flex flex-wrap items-center gap-2 text-xs">
+          <span id="quiz-index" class="rounded-full bg-slate-100 px-3 py-1 font-semibold text-slate-600"></span>
+          <span id="quiz-type" class="rounded-full bg-blue-50 px-3 py-1 font-semibold text-brand-700"></span>
+          <span id="quiz-difficulty" class="rounded-full bg-emerald-50 px-3 py-1 font-semibold text-emerald-700"></span>
+        </div>
+        <h3 id="quiz-question" class="text-lg font-bold leading-snug sm:text-xl"></h3>
+        <div id="quiz-options" class="mt-5 space-y-2"></div>
+      </article>
+      <div class="mt-5 flex flex-wrap items-center justify-between gap-3">
+        <button id="btn-prev" type="button" class="btn-ghost" data-i18n="btn_prev">Назад</button>
+        <div class="flex gap-2">
+          <button id="btn-next" type="button" class="btn-primary" data-i18n="btn_next">Далее</button>
+          <button id="btn-finish" type="button" class="btn-accent hidden" data-i18n="btn_finish">Завершить тест</button>
+        </div>
+      </div>
+      <div class="hotkeys mt-5">
+        <span><kbd>1</kbd>–<kbd>5</kbd> <span data-i18n="hotkey_options">выбор варианта</span></span>
+        <span><kbd>Enter</kbd> <span data-i18n="hotkey_enter">далее / завершить</span></span>
+        <span><kbd>Esc</kbd> <span data-i18n="hotkey_esc">выход из теста</span></span>
+      </div>
+    </section>
+
+    <!-- VIEW 4: Результат тестирования (Result) -->
+    <section id="view-result" class="hidden space-y-6">
+      <div class="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
+        <p class="text-xs font-semibold uppercase tracking-wider text-brand-600" data-i18n="result_badge">Результат попытки</p>
+        <h2 id="result-title" class="mt-1 text-2xl font-extrabold" data-i18n="result_heading">Результат</h2>
+        <p id="result-meta" class="mt-1 text-sm text-slate-500"></p>
+        <div class="mt-6 grid gap-4 sm:grid-cols-3">
+          <div class="stat-card">
+            <div class="text-xs font-semibold text-slate-500" data-i18n="stat_score">Балл</div>
+            <div id="result-score" class="mt-1 text-3xl font-extrabold"></div>
+          </div>
+          <div class="stat-card">
+            <div class="text-xs font-semibold text-slate-500" data-i18n="stat_percent">Процент</div>
+            <div id="result-percent" class="mt-1 text-3xl font-extrabold"></div>
+          </div>
+          <div class="stat-card">
+            <div class="text-xs font-semibold text-slate-500" data-i18n="stat_time">Время</div>
+            <div id="result-time" class="mt-1 text-3xl font-extrabold"></div>
+          </div>
+        </div>
+        <div id="result-breakdown" class="mt-4"></div>
+        <div class="mt-6 flex flex-wrap items-center gap-3">
+          <button id="btn-home" type="button" class="btn-primary" data-i18n="btn_to_topics">К темам</button>
+        </div>
+      </div>
+      <div>
+        <h3 class="mb-3 text-lg font-bold" data-i18n="review_title">Разбор ответов</h3>
+        <div id="result-review" class="space-y-3"></div>
+      </div>
+    </section>
+
+    <!-- VIEW 5: Панель преподавателя (Teacher) -->
+    <section id="view-teacher" class="hidden space-y-6">
+      <div class="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
+        <div class="flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <p class="text-xs font-semibold uppercase tracking-wider text-brand-600" data-i18n="teacher_badge">Административная панель</p>
+            <h2 class="mt-1 text-2xl font-extrabold" data-i18n="teacher_title">Управление обучением</h2>
+          </div>
+          <!-- Вкладки админки -->
+          <div class="flex flex-wrap items-center gap-2 rounded-2xl bg-slate-100 p-1.5 text-sm font-semibold">
+            <button id="teacher-tab-dashboard" class="nav-btn nav-btn-active" type="button" data-i18n="teacher_tab_dashboard">Дашборд</button>
+            <button id="teacher-tab-topics" class="nav-btn" type="button" data-i18n="teacher_tab_topics">Темы</button>
+            <button id="teacher-tab-questions" class="nav-btn" type="button" data-i18n="teacher_tab_questions">Вопросы</button>
+            <button id="teacher-tab-users" class="nav-btn" type="button" data-i18n="teacher_tab_users">Пользователи</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Вкладка: Дашборд -->
+      <div id="teacher-dashboard" class="space-y-6">
+        <div class="grid gap-4 sm:grid-cols-2">
+          <div class="stat-card min-w-[160px]">
+            <div class="text-xs font-semibold text-slate-500" data-i18n="stat_total_attempts">Всего попыток</div>
+            <div id="stat-total" class="mt-1 text-3xl font-extrabold">0</div>
+          </div>
+          <div class="stat-card min-w-[220px]">
+            <div class="text-xs font-semibold text-slate-500" data-i18n="stat_weak_topics">Западающие темы (&lt; 60%)</div>
+            <div id="stat-weak" class="mt-1 text-sm font-semibold leading-relaxed text-amber-700" data-i18n="stat_no_data">Пока недостаточно данных</div>
+          </div>
+        </div>
+
+        <div>
+          <h3 class="mb-4 text-lg font-bold" data-i18n="stat_topics_heading">Статистика по темам</h3>
+          <div id="stat-topics" class="grid gap-4 md:grid-cols-2"></div>
+        </div>
+
+        <div class="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+          <h3 class="mb-4 text-lg font-bold" data-i18n="stat_recent_heading">Последние попытки</h3>
+          <div class="overflow-x-auto">
+            <table class="w-full min-w-[640px] text-left text-sm">
+              <thead class="text-xs uppercase text-slate-500">
+                <tr>
+                  <th class="pb-2 pr-3" data-i18n="th_student">Студент</th>
+                  <th class="pb-2 pr-3" data-i18n="th_topic">Тема</th>
+                  <th class="pb-2 pr-3" data-i18n="th_score">Балл</th>
+                  <th class="pb-2 pr-3" data-i18n="th_percent">%</th>
+                  <th class="pb-2" data-i18n="th_time">Время</th>
+                </tr>
+              </thead>
+              <tbody id="stat-recent"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Вкладка: Темы -->
+      <div id="teacher-topics" class="hidden space-y-6">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 class="text-lg font-bold" data-i18n="teacher_topics_title">Темы тестирования</h3>
+            <p class="text-xs text-slate-500" data-i18n="teacher_topics_desc">Создание, редактирование и удаление разделов тестов</p>
+          </div>
+          <button id="btn-add-topic" type="button" class="btn-primary flex items-center gap-2">
+            <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <path d="M12 5v14M5 12h14" stroke-linecap="round" />
+            </svg>
+            <span data-i18n="btn_add_topic">Добавить тему</span>
+          </button>
+        </div>
+        <div id="topics-list" class="grid gap-4 sm:grid-cols-2"></div>
+      </div>
+
+      <!-- Вкладка: Вопросы -->
+      <div id="teacher-questions" class="hidden space-y-6">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 class="text-lg font-bold" data-i18n="teacher_questions_title">Банк вопросов</h3>
+            <p class="text-xs text-slate-500" data-i18n="teacher_questions_desc">Поиск, фильтрация, редактирование, импорт и экспорт вопросов</p>
+          </div>
+          <div class="flex flex-wrap items-center gap-2">
+            <button id="btn-export-json" type="button" class="btn-ghost text-xs" data-i18n="btn_export_json">Экспорт JSON</button>
+            <button id="btn-export-csv" type="button" class="btn-ghost text-xs" data-i18n="btn_export_csv">Экспорт CSV</button>
+            <button id="btn-import-json" type="button" class="btn-ghost text-xs" data-i18n="btn_import_json">Импорт JSON</button>
+            <button id="btn-import-csv" type="button" class="btn-ghost text-xs" data-i18n="btn_import_csv">Импорт CSV</button>
+            <input type="file" id="import-file" accept=".json,.csv" class="hidden" />
+            <button id="btn-add-question" type="button" class="btn-primary flex items-center gap-1.5 text-xs">
+              <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <path d="M12 5v14M5 12h14" stroke-linecap="round" />
+              </svg>
+              <span data-i18n="btn_add_question">Добавить вопрос</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Панель фильтров -->
+        <div class="grid gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:grid-cols-3">
+          <div>
+            <label class="block text-xs font-semibold text-slate-500" for="filter-topic" data-i18n="label_q_topic">Тема</label>
+            <select id="filter-topic" class="field mt-1 text-xs">
+              <option value="" data-i18n="filter_all_topics">Все темы</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-500" for="filter-difficulty" data-i18n="label_q_diff">Сложность</label>
+            <select id="filter-difficulty" class="field mt-1 text-xs">
+              <option value="" data-i18n="filter_all_diffs">Все сложности</option>
+              <option value="easy" data-i18n="diff_easy">Лёгкий</option>
+              <option value="medium" data-i18n="diff_medium">Средний</option>
+              <option value="hard" data-i18n="diff_hard">Сложный</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-500" for="filter-search" data-i18n="th_q_text">Поиск</label>
+            <input id="filter-search" type="search" class="field mt-1 text-xs" data-i18n-placeholder="filter_search_ph" placeholder="Поиск по тексту вопроса..." />
+          </div>
+        </div>
+
+        <!-- Таблица вопросов -->
+        <div class="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="overflow-x-auto">
+            <table class="w-full min-w-[700px] text-left text-sm">
+              <thead class="text-xs uppercase text-slate-500">
+                <tr>
+                  <th class="pb-2 pr-3" data-i18n="th_q_text">Текст</th>
+                  <th class="pb-2 pr-3" data-i18n="label_q_topic">Тема</th>
+                  <th class="pb-2 pr-3" data-i18n="th_q_type">Тип</th>
+                  <th class="pb-2 pr-3" data-i18n="th_q_diff">Сложность</th>
+                  <th class="pb-2 text-right" data-i18n="th_actions">Действия</th>
+                </tr>
+              </thead>
+              <tbody id="questions-table"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Вкладка: Пользователи -->
+      <div id="teacher-users" class="hidden space-y-6">
+        <div class="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+          <h3 class="mb-4 text-lg font-bold" data-i18n="users_title">Пользователи системы</h3>
+          <div class="overflow-x-auto">
+            <table class="w-full min-w-[560px] text-left text-sm">
+              <thead class="text-xs uppercase text-slate-500">
+                <tr>
+                  <th class="pb-2 pr-3" data-i18n="label_username">Логин</th>
+                  <th class="pb-2 pr-3" data-i18n="th_role">Роль</th>
+                  <th class="pb-2 pr-3" data-i18n="th_attempts">Попытки</th>
+                  <th class="pb-2 pr-3" data-i18n="th_avg_percent">Средний %</th>
+                  <th class="pb-2" data-i18n="th_actions">Действия</th>
+                </tr>
+              </thead>
+              <tbody id="users-table"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Модальное окно: Выход из теста -->
+  <div id="exit-modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-card">
+      <h3 class="text-lg font-extrabold" data-i18n="modal_exit_title">Выйти из теста?</h3>
+      <p class="mt-2 text-sm text-slate-500" data-i18n="modal_exit_desc">Ответы не сохранятся, пока вы не нажмёте «Завершить тест».</p>
+      <div class="mt-5 flex justify-end gap-2">
+        <button id="exit-stay" type="button" class="btn-ghost"><span data-i18n="modal_exit_stay">Остаться</span> <kbd class="ml-1">Esc</kbd></button>
+        <button id="exit-leave" type="button" class="btn-accent" data-i18n="modal_exit_leave">Выйти</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Модальное окно: Создание / Редактирование темы -->
+  <div id="topic-modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-card" style="width: min(32rem, 100%);">
+      <div class="flex items-center justify-between">
+        <h3 id="topic-modal-title" class="text-lg font-extrabold" data-i18n="modal_topic_add">Добавить тему</h3>
+        <button type="button" onclick="document.getElementById('topic-modal').classList.add('hidden')" class="text-slate-400 hover:text-slate-600">
+          <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M6 18L18 6M6 6l12 12" stroke-linecap="round" />
+          </svg>
+        </button>
+      </div>
+      <p id="topic-error" class="mt-3 hidden rounded-xl bg-rose-50 px-3 py-2 text-sm font-medium text-rose-700"></p>
+      <form id="topic-form" class="mt-4 space-y-4">
+        <input type="hidden" id="topic-form-id" />
+        <div>
+          <label class="text-sm font-semibold" for="topic-form-title" data-i18n="label_topic_title">Название темы</label>
+          <input id="topic-form-title" class="field mt-1" required maxlength="120" data-i18n-placeholder="ph_topic_title" placeholder="Например: Архитектура компьютера" />
+        </div>
+        <div>
+          <label class="text-sm font-semibold" for="topic-form-subtitle" data-i18n="label_topic_subtitle">Краткое описание</label>
+          <input id="topic-form-subtitle" class="field mt-1" required maxlength="255" data-i18n-placeholder="ph_topic_subtitle" placeholder="Процессор, память, принципы фон Неймана..." />
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="text-sm font-semibold" for="topic-form-icon" data-i18n="label_topic_icon">Иконка</label>
+            <select id="topic-form-icon" class="field mt-1">
+              <option value="cpu">cpu (процессор)</option>
+              <option value="code">code (код)</option>
+              <option value="database">database (базы данных)</option>
+              <option value="hash">hash (алгоритмы)</option>
+              <option value="globe">globe (сети)</option>
+              <option value="shield">shield (безопасность)</option>
+              <option value="zap">zap (быстродействие/логика)</option>
+              <option value="book">book (теория)</option>
+            </select>
+          </div>
+          <div>
+            <label class="text-sm font-semibold" for="topic-form-time" data-i18n="label_topic_time">Время (секунды)</label>
+            <input type="number" id="topic-form-time" class="field mt-1" required min="30" max="7200" step="10" value="480" />
+          </div>
+        </div>
+        <div class="mt-6 flex justify-end gap-2">
+          <button id="topic-cancel" type="button" class="btn-ghost" data-i18n="btn_cancel">Отмена</button>
+          <button type="submit" class="btn-primary" data-i18n="btn_save">Сохранить</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Модальное окно: Создание / Редактирование вопроса -->
+  <div id="question-modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-card" style="width: min(42rem, 100%); max-height: 90vh; overflow-y: auto;">
+      <div class="flex items-center justify-between">
+        <h3 id="question-modal-title" class="text-lg font-extrabold" data-i18n="modal_q_add">Добавить вопрос</h3>
+        <button type="button" onclick="document.getElementById('question-modal').classList.add('hidden')" class="text-slate-400 hover:text-slate-600">
+          <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M6 18L18 6M6 6l12 12" stroke-linecap="round" />
+          </svg>
+        </button>
+      </div>
+      <p id="question-error" class="mt-3 hidden rounded-xl bg-rose-50 px-3 py-2 text-sm font-medium text-rose-700"></p>
+      <p id="question-ok" class="mt-3 hidden rounded-xl bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-700" data-i18n="q_saved_ok">Вопрос сохранён.</p>
+      <form id="question-form" class="mt-4 space-y-4">
+        <input type="hidden" id="q-edit-qid" />
+        <div class="grid gap-3 sm:grid-cols-3">
+          <div>
+            <label class="text-sm font-semibold" for="q-topic" data-i18n="label_q_topic">Тема</label>
+            <select id="q-topic" class="field mt-1"></select>
+          </div>
+          <div>
+            <label class="text-sm font-semibold" for="q-type" data-i18n="label_q_type">Тип</label>
+            <select id="q-type" class="field mt-1">
+              <option value="single" data-i18n="type_single">Один ответ</option>
+              <option value="multiple" data-i18n="type_multiple">Несколько ответов</option>
+            </select>
+          </div>
+          <div>
+            <label class="text-sm font-semibold" for="q-difficulty" data-i18n="label_q_diff">Сложность</label>
+            <select id="q-difficulty" class="field mt-1">
+              <option value="easy" data-i18n="diff_easy">Лёгкий</option>
+              <option value="medium" selected data-i18n="diff_medium">Средний</option>
+              <option value="hard" data-i18n="diff_hard">Сложный</option>
+            </select>
+          </div>
+        </div>
+        <div>
+          <label class="text-sm font-semibold" for="q-text" data-i18n="label_q_text">Текст вопроса</label>
+          <textarea id="q-text" class="field mt-1 min-h-[80px]" required minlength="8" data-i18n-placeholder="ph_q_text" placeholder="Введите текст вопроса..."></textarea>
+        </div>
+        <div>
+          <label class="text-sm font-semibold" for="q-explanation" data-i18n="label_q_explanation">Пояснение к ответу (опционально)</label>
+          <textarea id="q-explanation" class="field mt-1 min-h-[64px]" data-i18n-placeholder="ph_q_explanation" placeholder="Разбор и пояснение правильного ответа..."></textarea>
+        </div>
+
+        <!-- Динамические варианты ответов -->
+        <div>
+          <div class="mb-2 flex items-center justify-between">
+            <label class="text-sm font-semibold" data-i18n="label_options">Варианты ответов</label>
+            <button id="btn-add-option-row" type="button" class="rounded-xl border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-bold text-brand-600 hover:bg-blue-100 transition">
+              <span data-i18n="btn_add_option">+ Добавить вариант ответа</span>
+            </button>
+          </div>
+          <div class="space-y-2" id="q-options"></div>
+        </div>
+
+        <div class="mt-6 flex justify-end gap-2">
+          <button id="question-cancel" type="button" class="btn-ghost" data-i18n="btn_cancel">Отмена</button>
+          <button class="btn-primary" type="submit" data-i18n="btn_save">Сохранить вопрос</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Модальное окно: Подтверждение удаления -->
+  <div id="delete-modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-card">
+      <h3 class="text-lg font-extrabold text-slate-900" data-i18n="modal_delete_title">Удаление</h3>
+      <p id="delete-text" class="mt-2 text-sm text-slate-500">Вы действительно хотите удалить этот объект? Это действие нельзя отменить.</p>
+      <div class="mt-5 flex justify-end gap-2">
+        <button id="delete-cancel" type="button" class="btn-ghost" data-i18n="btn_cancel">Отмена</button>
+        <button id="delete-confirm" type="button" class="rounded-2xl bg-rose-600 px-4 py-2 text-sm font-bold text-white hover:bg-rose-700 transition" data-i18n="btn_delete">Удалить</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Модальное окно: Карта компетенций ученика (для преподавателя) -->
+  <div id="student-competency-modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-card" style="width: min(48rem, 100%); max-height: 90vh; overflow-y: auto;">
+      <div class="flex items-center justify-between">
+        <h3 id="student-comp-title" class="text-lg font-extrabold" data-i18n="student_comp_title">Карта компетенций</h3>
+        <button type="button" onclick="document.getElementById('student-competency-modal').classList.add('hidden')" class="text-slate-400 hover:text-slate-600">
+          <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M6 18L18 6M6 6l12 12" stroke-linecap="round" />
+          </svg>
+        </button>
+      </div>
+      <div id="student-comp-body" class="mt-4"></div>
+      <div class="mt-6 flex justify-end">
+        <button type="button" class="btn-ghost" onclick="document.getElementById('student-competency-modal').classList.add('hidden')" data-i18n="btn_close">Закрыть</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Подвал сайта -->
+  <footer class="mx-auto max-w-6xl px-4 pb-10 text-center text-xs text-slate-400 sm:px-6" data-i18n="footer_text">
+    Пароли хранятся в виде хэша · роли проверяются на сервере
+  </footer>
+
+  <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
