@@ -1,47 +1,70 @@
-Python cache
+# Python cache
+__pycache__/
+*.py[codz]
+*$py.class
 
-pycache/ .py[codz] $py.class
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
 
-Virtual environments
+# Secrets and environment variables
+.env
+.env.*
+!.env.example
+data/secret.key
 
-.venv/ venv/ env/ ENV/ env.bak/ venv.bak/
+# Application data and database
+data/attempts.json
+data/attempts.tmp
+data/infotrainer.db
+*.db
 
-Secrets and environment variables
+# Python build and distribution
+build/
+dist/
+*.egg-info/
+.eggs/
+wheels/
+.Python
 
-.env .env.* !.env.example data/secret.key
+# Testing and coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+.cache/
 
-Application data and database
+# Type checking and linting
+.mypycache/
+.dmypy.json
+.ruffcache/
+.pyre/
+.pytype/
 
-data/attempts.json data/attempts.tmp data/infotrainer.db
+# Logs and temporary files
+*.log
+*.tmp
+tempCodeRunnerFile.py
 
-Python build and distribution
+# IDE
+.idea/
+.vscode/
 
-build/ dist/ *.egg-info/ .eggs/ wheels/ .Python
-
-Testing and coverage
-
-.pytest_cache/ .coverage .coverage.* htmlcov/ .tox/ .nox/ .hypothesis/ .cache/
-
-Type checking and linting
-
-.mypycache/ .dmypy.json .ruffcache/ .pyre/ .pytype/
-
-Logs and temporary files
-
-.log .tmp tempCodeRunnerFile.py
-
-IDE
-
-.idea/ .vscode/
-
-Jupyter
-
+# Jupyter
 .ipynb_checkpoints/
 
-Packaging tools
+# Packaging tools
+.pip-wheel-metadata/
+.installed.cfg
+MANIFEST
 
-.pip-wheel-metadata/ .installed.cfg MANIFEST
-
-Documentation build
-
-docs/_build/ site/
+# Documentation build
+docs/_build/
+site/
