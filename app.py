@@ -1,61 +1,67 @@
 """
 ИнфоТренер: тесты по информатике с ролями, SQLite и серверной проверкой ответов.
+Версия 2.0 с улучшенной безопасностью, серверными попытками и группами.
 """
 
 from __future__ import annotations
 
 import csv
+import functools
 import io
 import json
+import os
 import random
 import re
 import secrets
 import sqlite3
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
-from functools import wraps
 from pathlib import Path
 from typing import Any, Callable
 
 from flask import Flask, Response, g, jsonify, render_template, request, session
 from werkzeug.security import check_password_hash, generate_password_hash
 
+# Configuration
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 QUESTIONS_PATH = DATA_DIR / "questions.json"
 DB_PATH = DATA_DIR / "infotrainer.db"
 SECRET_PATH = DATA_DIR / "secret.key"
-
 LOCALES_DIR = BASE_DIR / "locales"
 
-USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{3,32}$")
+# Validation patterns
+USERNAME_RE = re.compile(r"^[A-Za-z0-9_\u0400-\u04FF]{3,32}$")
 OPTION_IDS = ("a", "b", "c", "d", "e", "f")
-ROLES = ("student", "teacher")
+ROLES = ("student", "teacher", "admin")
 DIFFICULTIES = ("easy", "medium", "hard")
-ICONS = ("cpu", "code", "database", "hash", "globe", "shield", "zap", "book")
+ICONS = ("cpu", "code", "database", "hash", "globe", "shield", "zap", "book", "network", "palette")
 
-# Демо-аккаунты создаются только при пустой таблице users.
+# Demo accounts only created in demo mode
 DEMO_USERS = (
     ("teacher", "Teacher123", "teacher"),
     ("student", "Student123", "student"),
 )
 
-TRANSLIT_MAP = {
-    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "yo",
-    "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m",
-    "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
-    "ф": "f", "х": "kh", "ц": "ts", "ч": "ch", "ш": "sh", "щ": "shch",
-    "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
-}
+# Rate limiting storage
+_rate_limit_store: dict[str, list[float]] = {}
 
 
 def slugify(text: str) -> str:
     """Транслитерация русских букв в латиницу, нижний регистр, дефисы для id тем."""
+    translit_map = {
+        "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "yo",
+        "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m",
+        "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
+        "ф": "f", "х": "kh", "ц": "ts", "ч": "ch", "ш": "sh", "щ": "shch",
+        "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
+    }
     lowered = text.strip().lower()
     chars = []
     for ch in lowered:
-        if ch in TRANSLIT_MAP:
-            chars.append(TRANSLIT_MAP[ch])
+        if ch in translit_map:
+            chars.append(translit_map[ch])
         elif ch.isalnum() or ch in (" ", "-", "_"):
             chars.append(ch)
     joined = "".join(chars)
@@ -75,12 +81,17 @@ def read_or_create_secret() -> str:
     return value
 
 
+# Flask app initialization
 app = Flask(__name__)
 app.config["SECRET_KEY"] = read_or_create_secret()
 app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=7)
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
-app.config["SESSION_COOKIE_SECURE"] = False  # локальный HTTP; для HTTPS поставьте True
+app.config["SESSION_COOKIE_SECURE"] = os.getenv("HTTPS", "false").lower() == "true"
+
+# Demo mode check
+IS_DEMO_MODE = os.getenv("APP_ENV", "demo").lower() == "demo"
+TEACHER_INVITE_CODE = os.getenv("TEACHER_INVITE_CODE", secrets.token_urlsafe(16))
 
 
 def get_db() -> sqlite3.Connection:
@@ -101,95 +112,24 @@ def close_db(_error: BaseException | None) -> None:
         connection.close()
 
 
-def seed_from_json(db: sqlite3.Connection) -> None:
-    """Первоначальное наполнение базы данных из data/questions.json с заполнением таблицы options."""
-    if not QUESTIONS_PATH.exists():
-        return
-    try:
-        with QUESTIONS_PATH.open(encoding="utf-8") as file:
-            data = json.load(file)
-    except Exception:
-        return
-
-    topics = data.get("topics", [])
-    for topic in topics:
-        topic_id = str(topic.get("id") or "").strip()
-        if not topic_id:
-            continue
-        title = str(topic.get("title") or "").strip()
-        subtitle = str(topic.get("subtitle") or "").strip()
-        icon = str(topic.get("icon") or "hash").strip()
-        time_limit_sec = int(topic.get("time_limit_sec") or 480)
-
-        db.execute(
-            """
-            INSERT OR REPLACE INTO topics (id, title, subtitle, icon, time_limit_sec, created_by)
-            VALUES (?, ?, ?, ?, ?, NULL)
-            """,
-            (topic_id, title, subtitle, icon, time_limit_sec),
-        )
-
-        for q in topic.get("questions", []):
-            qid = str(q.get("id") or "").strip()
-            if not qid:
-                continue
-            q_type = str(q.get("type") or "single").strip()
-            text = str(q.get("text") or "").strip()
-            options = q.get("options") or []
-            correct = q.get("correct") or []
-            difficulty = str(q.get("difficulty") or "medium").strip()
-            if difficulty not in DIFFICULTIES:
-                difficulty = "medium"
-            explanation = str(q.get("explanation") or "").strip()
-
-            cursor = db.execute(
-                """
-                INSERT OR IGNORE INTO questions (
-                    topic_id, qid, type, text, options_json, correct_json, difficulty, explanation, created_by
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
-                """,
-                (
-                    topic_id,
-                    qid,
-                    q_type,
-                    text,
-                    json.dumps(options, ensure_ascii=False),
-                    json.dumps(correct, ensure_ascii=False),
-                    difficulty,
-                    explanation,
-                ),
-            )
-            q_row = db.execute("SELECT id FROM questions WHERE qid = ?", (qid,)).fetchone()
-            if q_row:
-                q_id = q_row["id"]
-                db.execute("DELETE FROM options WHERE question_id = ?", (q_id,))
-                for opt in options:
-                    if not isinstance(opt, dict):
-                        continue
-                    opt_id = str(opt.get("id") or "").strip().lower()
-                    opt_text = str(opt.get("text") or "").strip()
-                    is_correct_val = 1 if opt_id in [str(c).lower() for c in correct] else 0
-                    db.execute(
-                        """
-                        INSERT INTO options (question_id, option_id, option_text, is_correct)
-                        VALUES (?, ?, ?, ?)
-                        """,
-                        (q_id, opt_id, opt_text, is_correct_val),
-                    )
-
-
 def init_db() -> None:
     """Создаёт таблицы, применяет миграции и сидирует темы и пользователей."""
     db = get_db()
+    
+    # Create tables with proper schema
     db.executescript(
         """
+        -- Users table
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT NOT NULL UNIQUE COLLATE NOCASE,
             password_hash TEXT NOT NULL,
-            role TEXT NOT NULL CHECK (role IN ('student', 'teacher'))
+            role TEXT NOT NULL CHECK (role IN ('student', 'teacher', 'admin')),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_login TEXT
         );
 
+        -- Topics table
         CREATE TABLE IF NOT EXISTS topics (
             id TEXT PRIMARY KEY,
             title TEXT NOT NULL,
@@ -197,9 +137,11 @@ def init_db() -> None:
             icon TEXT NOT NULL DEFAULT 'hash',
             time_limit_sec INTEGER NOT NULL DEFAULT 480,
             created_by INTEGER,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
         );
 
+        -- Questions table
         CREATE TABLE IF NOT EXISTS questions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             topic_id TEXT NOT NULL,
@@ -208,13 +150,17 @@ def init_db() -> None:
             text TEXT NOT NULL,
             options_json TEXT DEFAULT '[]',
             correct_json TEXT DEFAULT '[]',
-            difficulty TEXT NOT NULL DEFAULT 'medium',
+            difficulty TEXT NOT NULL DEFAULT 'medium' CHECK (difficulty IN ('easy', 'medium', 'hard')),
             explanation TEXT NOT NULL DEFAULT '',
+            bloom_level TEXT DEFAULT 'understand' CHECK (bloom_level IN ('remember', 'understand', 'apply', 'analyze')),
+            learning_outcome TEXT DEFAULT '',
             created_by INTEGER,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (topic_id) REFERENCES topics(id) ON DELETE CASCADE,
             FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
         );
 
+        -- Options table
         CREATE TABLE IF NOT EXISTS options (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             question_id INTEGER NOT NULL,
@@ -225,6 +171,7 @@ def init_db() -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_options_qid ON options(question_id);
 
+        -- Results table
         CREATE TABLE IF NOT EXISTS results (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
@@ -236,71 +183,362 @@ def init_db() -> None:
             duration_sec INTEGER NOT NULL,
             finished_at TEXT NOT NULL,
             review_json TEXT NOT NULL,
+            attempt_id INTEGER,
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_results_user ON results(user_id);
+        CREATE INDEX IF NOT EXISTS idx_results_topic ON results(topic_id);
+
+        -- Test attempts table (server-side attempts)
+        CREATE TABLE IF NOT EXISTS attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            topic_id TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            deadline_at TEXT NOT NULL,
+            finished_at TEXT,
+            status TEXT NOT NULL DEFAULT 'in_progress' CHECK (status IN ('in_progress', 'submitted', 'expired')),
+            question_order_json TEXT NOT NULL,
+            answers_json TEXT NOT NULL DEFAULT '{}',
+            duration_sec INTEGER,
+            suspicious_flag INTEGER DEFAULT 0,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY (topic_id) REFERENCES topics(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_attempts_user ON attempts(user_id);
+        CREATE INDEX IF NOT EXISTS idx_attempts_status ON attempts(status);
+
+        -- Groups table
+        CREATE TABLE IF NOT EXISTS groups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            course TEXT,
+            specialty TEXT,
+            invite_code TEXT NOT NULL UNIQUE,
+            created_by INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
+        );
+
+        -- Group members table
+        CREATE TABLE IF NOT EXISTS group_members (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            group_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            joined_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(group_id, user_id),
+            FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+
+        -- Assignments table
+        CREATE TABLE IF NOT EXISTS assignments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            group_id INTEGER NOT NULL,
+            topic_id TEXT NOT NULL,
+            created_by INTEGER NOT NULL,
+            deadline_at TEXT,
+            max_attempts INTEGER DEFAULT 1,
+            mode TEXT DEFAULT 'practice' CHECK (mode IN ('practice', 'exam')),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
+            FOREIGN KEY (topic_id) REFERENCES topics(id) ON DELETE CASCADE,
+            FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
         );
         """
     )
 
-    # Миграции для существующих баз данных
-    try:
-        db.execute("ALTER TABLE questions ADD COLUMN difficulty TEXT NOT NULL DEFAULT 'medium'")
-    except sqlite3.OperationalError:
-        pass
-
-    try:
-        db.execute("ALTER TABLE questions ADD COLUMN explanation TEXT NOT NULL DEFAULT ''")
-    except sqlite3.OperationalError:
-        pass
-
-    # Демо-аккаунты
-    for name, password, role in DEMO_USERS:
-        found = db.execute(
-            "SELECT id FROM users WHERE username = ? COLLATE NOCASE",
-            (name,),
-        ).fetchone()
-        if found is None:
-            db.execute(
-                "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
-                (name, generate_password_hash(password), role),
-            )
-
-    # Сидирование из questions.json, если таблица topics пуста
-    topic_count_row = db.execute("SELECT COUNT(*) AS cnt FROM topics").fetchone()
-    if topic_count_row and topic_count_row["cnt"] == 0:
-        seed_from_json(db)
-
-    # Миграция существующих вопросов в таблицу options, если options пуста
-    opt_count_row = db.execute("SELECT COUNT(*) AS cnt FROM options").fetchone()
-    if opt_count_row and opt_count_row["cnt"] == 0:
-        q_rows = db.execute("SELECT id, options_json, correct_json FROM questions").fetchall()
-        for q in q_rows:
-            q_id = q["id"]
-            try:
-                opts = json.loads(q["options_json"]) if q["options_json"] else []
-                corr = json.loads(q["correct_json"]) if q["correct_json"] else []
-            except Exception:
-                continue
-            for idx, opt in enumerate(opts):
-                o_id = str(opt.get("id") or chr(ord("a") + idx)).lower()
-                o_text = str(opt.get("text") or "").strip()
-                is_corr = 1 if o_id in [str(c).lower() for c in corr] else 0
+    # Demo accounts only in demo mode
+    if IS_DEMO_MODE:
+        for name, password, role in DEMO_USERS:
+            found = db.execute(
+                "SELECT id FROM users WHERE username = ? COLLATE NOCASE",
+                (name,),
+            ).fetchone()
+            if found is None:
                 db.execute(
-                    """
-                    INSERT INTO options (question_id, option_id, option_text, is_correct)
-                    VALUES (?, ?, ?, ?)
-                    """,
-                    (q_id, o_id, o_text, is_corr),
+                    "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
+                    (name, generate_password_hash(password), role),
                 )
 
     db.commit()
 
 
-def get_all_topics() -> list[dict[str, Any]]:
-    """Возвращает список всех тем с количеством вопросов question_count только из БД."""
+# Security utilities
+def check_rate_limit(identifier: str, max_attempts: int = 5, window_sec: int = 300) -> tuple[bool, int]:
+    """Check if the identifier has exceeded rate limit. Returns (allowed, remaining)."""
+    now = time.time()
+    if identifier not in _rate_limit_store:
+        _rate_limit_store[identifier] = []
+    
+    # Clean old entries
+    _rate_limit_store[identifier] = [
+        t for t in _rate_limit_store[identifier] 
+        if now - t < window_sec
+    ]
+    
+    attempts = len(_rate_limit_store[identifier])
+    if attempts >= max_attempts:
+        return False, 0
+    
+    return True, max_attempts - attempts
+
+
+def record_attempt(identifier: str):
+    """Record a failed attempt for rate limiting."""
+    now = time.time()
+    if identifier not in _rate_limit_store:
+        _rate_limit_store[identifier] = []
+    _rate_limit_store[identifier].append(now)
+
+
+def require_csrf(f: Callable) -> Callable:
+    """Decorator to require CSRF token or X-Requested-With header for state-changing operations."""
+    @functools.wraps(f)
+    def decorated(*args, **kwargs):
+        # Check for X-Requested-With header (common for AJAX)
+        if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+            return f(*args, **kwargs)
+        
+        # Check for CSRF token in header
+        csrf_token = request.headers.get("X-CSRF-Token")
+        if csrf_token and csrf_token == session.get("csrf_token"):
+            return f(*args, **kwargs)
+        
+        # For GET requests, allow without CSRF
+        if request.method == "GET":
+            return f(*args, **kwargs)
+        
+        return jsonify({"error": "CSRF validation failed", "code": "CSRF_ERROR"}), 403
+    return decorated
+
+
+def login_required(f: Callable) -> Callable:
+    """Decorator to require login."""
+    @functools.wraps(f)
+    def decorated(*args, **kwargs):
+        if "user_id" not in session:
+            return jsonify({"error": "Unauthorized", "code": "AUTH_REQUIRED"}), 401
+        return f(*args, **kwargs)
+    return decorated
+
+
+def role_required(*roles: str):
+    """Decorator factory to require specific role(s)."""
+    def decorator(f: Callable) -> Callable:
+        @functools.wraps(f)
+        def decorated(*args, **kwargs):
+            if "user_id" not in session:
+                return jsonify({"error": "Unauthorized", "code": "AUTH_REQUIRED"}), 401
+            db = get_db()
+            user = db.execute(
+                "SELECT role FROM users WHERE id = ?", (session["user_id"],)
+            ).fetchone()
+            if not user or user["role"] not in roles:
+                return jsonify({"error": "Forbidden", "code": "INSUFFICIENT_PRIVILEGES"}), 403
+            return f(*args, **kwargs)
+        return decorated
+    return decorator
+
+
+# Routes
+@app.route("/")
+def index():
+    """Render main page."""
+    # Generate CSRF token for session
+    if "csrf_token" not in session:
+        session["csrf_token"] = secrets.token_urlsafe(32)
+    return render_template("index.html")
+
+
+@app.route("/api/config")
+def get_config():
+    """Get public configuration."""
+    return jsonify({
+        "demo_mode": IS_DEMO_MODE,
+        "csrf_token": session.get("csrf_token"),
+    })
+
+
+@app.route("/api/locales/<lang>")
+def get_locale(lang: str):
+    """Get translation file."""
+    safe_lang = "kk" if lang == "kk" else "ru"
+    file_path = LOCALES_DIR / f"{safe_lang}.json"
+    if file_path.exists():
+        return file_path.read_text(encoding="utf-8"), 200, {"Content-Type": "application/json"}
+    return jsonify({}), 200
+
+
+@app.route("/api/register", methods=["POST"])
+@require_csrf
+def register():
+    """Register new user. Teacher role requires invite code."""
+    data = request.get_json() or {}
+    username = (data.get("username") or "").strip()
+    password = data.get("password") or ""
+    role = (data.get("role") or "student").strip().lower()
+    invite_code = (data.get("invite_code") or "").strip()
+
+    # Validate username
+    if not USERNAME_RE.match(username):
+        return jsonify({
+            "error": "Invalid username. Use 3-32 letters, numbers, or Cyrillic characters.",
+            "code": "INVALID_USERNAME"
+        }), 400
+
+    # Validate password
+    if len(password) < 8:
+        return jsonify({"error": "Password must be at least 8 characters.", "code": "WEAK_PASSWORD"}), 400
+    if not (re.search(r"[a-z]", password) and re.search(r"[A-Z]", password) and re.search(r"\d", password)):
+        return jsonify({
+            "error": "Password must contain uppercase, lowercase, and a number.",
+            "code": "WEAK_PASSWORD"
+        }), 400
+
+    # Role validation - teacher requires invite code
+    if role == "teacher":
+        if not invite_code or invite_code != TEACHER_INVITE_CODE:
+            return jsonify({
+                "error": "Invalid or missing teacher invite code.",
+                "code": "INVALID_INVITE_CODE"
+            }), 403
+    else:
+        role = "student"  # Default to student if not teacher with valid code
+
+    db = get_db()
+    
+    # Check if username exists
+    existing = db.execute(
+        "SELECT id FROM users WHERE username = ? COLLATE NOCASE",
+        (username,)
+    ).fetchone()
+    if existing:
+        return jsonify({"error": "Username already taken.", "code": "USERNAME_EXISTS"}), 409
+
+    # Create user
+    password_hash = generate_password_hash(password)
+    cursor = db.execute(
+        "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
+        (username, password_hash, role)
+    )
+    db.commit()
+
+    return jsonify({
+        "success": True,
+        "message": "Registration successful. Please log in.",
+        "user_id": cursor.lastrowid
+    }), 201
+
+
+@app.route("/api/login", methods=["POST"])
+@require_csrf
+def login():
+    """Login user with rate limiting."""
+    data = request.get_json() or {}
+    username = (data.get("username") or "").strip()
+    password = data.get("password") or ""
+    
+    # Rate limiting by IP + username combination
+    client_id = f"{request.remote_addr}:{username.lower()}"
+    allowed, remaining = check_rate_limit(client_id, max_attempts=5, window_sec=300)
+    
+    if not allowed:
+        return jsonify({
+            "error": "Too many login attempts. Please try again in 5 minutes.",
+            "code": "RATE_LIMIT_EXCEEDED"
+        }), 429
+
+    db = get_db()
+    user = db.execute(
+        "SELECT id, username, password_hash, role FROM users WHERE username = ? COLLATE NOCASE",
+        (username,)
+    ).fetchone()
+
+    # Generic error message to prevent username enumeration
+    if not user or not check_password_hash(user["password_hash"], password):
+        record_attempt(client_id)
+        return jsonify({
+            "error": "Invalid username or password.",
+            "code": "INVALID_CREDENTIALS"
+        }), 401
+
+    # Update last login
+    db.execute(
+        "UPDATE users SET last_login = ? WHERE id = ?",
+        (datetime.now(timezone.utc).isoformat(), user["id"])
+    )
+    db.commit()
+
+    # Set session
+    session.permanent = True
+    session["user_id"] = user["id"]
+    session["username"] = user["username"]
+    session["role"] = user["role"]
+
+    # Regenerate CSRF token on login
+    session["csrf_token"] = secrets.token_urlsafe(32)
+
+    return jsonify({
+        "success": True,
+        "user": {
+            "id": user["id"],
+            "username": user["username"],
+            "role": user["role"]
+        },
+        "csrf_token": session["csrf_token"]
+    })
+
+
+@app.route("/api/logout", methods=["POST"])
+@require_csrf
+def logout():
+    """Logout user."""
+    session.clear()
+    return jsonify({"success": True, "message": "Logged out successfully."})
+
+
+@app.route("/api/me")
+@login_required
+def get_current_user():
+    """Get current user info."""
+    db = get_db()
+    user = db.execute(
+        "SELECT id, username, role, created_at FROM users WHERE id = ?",
+        (session["user_id"],)
+    ).fetchone()
+    
+    if not user:
+        return jsonify({"error": "User not found", "code": "USER_NOT_FOUND"}), 404
+    
+    return jsonify({
+        "id": user["id"],
+        "username": user["username"],
+        "role": user["role"],
+        "created_at": user["created_at"],
+        "csrf_token": session.get("csrf_token")
+    })
+
+
+# Initialize database on first request
+@app.before_request
+def ensure_db():
+    """Ensure database is initialized."""
+    if not hasattr(g, '_db_initialized'):
+        init_db()
+        g._db_initialized = True
+
+
+# Topic and Question API Routes
+
+@app.route("/api/topics")
+@login_required
+def get_topics():
+    """Get all topics with question counts."""
     db = get_db()
     rows = db.execute(
         """
-        SELECT t.id, t.title, t.subtitle, t.icon, t.time_limit_sec, t.created_by,
+        SELECT t.id, t.title, t.subtitle, t.icon, t.time_limit_sec,
                COUNT(q.id) AS question_count
         FROM topics t
         LEFT JOIN questions q ON q.topic_id = t.id
@@ -308,1491 +546,1309 @@ def get_all_topics() -> list[dict[str, Any]]:
         ORDER BY t.rowid ASC
         """
     ).fetchall()
-    return [
+    
+    return jsonify([
         {
             "id": row["id"],
             "title": row["title"],
             "subtitle": row["subtitle"],
             "icon": row["icon"],
             "time_limit_sec": row["time_limit_sec"],
-            "created_by": row["created_by"],
-            "question_count": row["question_count"],
+            "question_count": row["question_count"]
         }
         for row in rows
-    ]
+    ])
 
 
-def get_topic(topic_id: str) -> dict[str, Any] | None:
-    """Возвращает тему вместе с полным списком вопросов и вариантов из таблицы options."""
+@app.route("/api/topics/<topic_id>")
+@login_required
+def get_topic(topic_id: str):
+    """Get topic with all questions (for test)."""
     db = get_db()
-    t = db.execute(
-        "SELECT id, title, subtitle, icon, time_limit_sec, created_by FROM topics WHERE id = ?",
-        (topic_id,),
+    
+    # Get topic info
+    topic = db.execute(
+        "SELECT id, title, subtitle, icon, time_limit_sec FROM topics WHERE id = ?",
+        (topic_id,)
     ).fetchone()
-    if t is None:
-        return None
-
+    
+    if not topic:
+        return jsonify({"error": "Topic not found", "code": "TOPIC_NOT_FOUND"}), 404
+    
+    # Get questions with options
     q_rows = db.execute(
         """
-        SELECT id, qid, type, text, options_json, correct_json, difficulty, explanation, created_by
+        SELECT id, qid, type, text, difficulty, explanation, bloom_level
         FROM questions
         WHERE topic_id = ?
         ORDER BY id ASC
         """,
-        (topic_id,),
+        (topic_id,)
     ).fetchall()
-
+    
     questions = []
     for row in q_rows:
-        q_db_id = row["id"]
+        # Get options for this question
         opt_rows = db.execute(
             """
-            SELECT option_id, option_text, is_correct
+            SELECT option_id, option_text
             FROM options
             WHERE question_id = ?
             ORDER BY id ASC
             """,
-            (q_db_id,),
+            (row["id"],)
         ).fetchall()
-
-        if opt_rows:
-            options = [
-                {
-                    "id": o["option_id"],
-                    "text": o["option_text"],
-                    "is_correct": bool(o["is_correct"]),
-                }
-                for o in opt_rows
-            ]
-            correct = [o["option_id"] for o in opt_rows if o["is_correct"]]
-        else:
-            # Fallback для совместимости
-            try:
-                raw_opts = json.loads(row["options_json"]) if row["options_json"] else []
-                correct = json.loads(row["correct_json"]) if row["correct_json"] else []
-            except Exception:
-                raw_opts = []
-                correct = []
-            options = [
-                {
-                    "id": str(o.get("id") or ""),
-                    "text": str(o.get("text") or ""),
-                    "is_correct": str(o.get("id") or "").lower() in [str(c).lower() for c in correct],
-                }
-                for o in raw_opts
-            ]
-
-        questions.append(
-            {
-                "id": row["qid"],
-                "qid": row["qid"],
-                "db_id": q_db_id,
-                "type": row["type"],
-                "text": row["text"],
-                "options": options,
-                "correct": correct,
-                "difficulty": row["difficulty"] if "difficulty" in row.keys() else "medium",
-                "explanation": row["explanation"] if "explanation" in row.keys() else "",
-                "created_by": row["created_by"],
-            }
-        )
-
-    return {
-        "id": t["id"],
-        "title": t["title"],
-        "subtitle": t["subtitle"],
-        "icon": t["icon"],
-        "time_limit_sec": t["time_limit_sec"],
-        "created_by": t["created_by"],
-        "questions": questions,
-        "question_count": len(questions),
-    }
-
-
-def find_topic(topic_id: str) -> dict[str, Any] | None:
-    """Алиас для get_topic для обратной совместимости."""
-    return get_topic(topic_id)
-
-
-def public_topic(topic: dict[str, Any]) -> dict[str, Any]:
-    """Безопасное подмножество свойств темы для клиента."""
-    return {
+        
+        options = [
+            {"id": o["option_id"], "text": o["option_text"]}
+            for o in opt_rows
+        ]
+        
+        questions.append({
+            "id": row["qid"],
+            "qid": row["qid"],
+            "type": row["type"],
+            "text": row["text"],
+            "difficulty": row["difficulty"],
+            "explanation": row["explanation"],
+            "bloom_level": row["bloom_level"],
+            "options": options
+        })
+    
+    return jsonify({
         "id": topic["id"],
         "title": topic["title"],
-        "subtitle": topic.get("subtitle", ""),
-        "icon": topic.get("icon", "hash"),
+        "subtitle": topic["subtitle"],
+        "icon": topic["icon"],
         "time_limit_sec": topic["time_limit_sec"],
-        "question_count": topic.get("question_count", len(topic.get("questions", []))),
-    }
+        "question_count": len(questions),
+        "questions": questions
+    })
 
 
-def public_questions(topic: dict[str, Any]) -> list[dict[str, Any]]:
-    """Список вопросов темы без ключей правильных ответов, перемешанный случайным образом."""
-    questions = []
-    for question in topic.get("questions", []):
-        # Очищаем варианты от признака is_correct перед отправкой на клиент
-        clean_options = [
-            {"id": opt["id"], "text": opt["text"]}
-            for opt in question.get("options", [])
-        ]
-        shuffled_options = list(clean_options)
-        random.shuffle(shuffled_options)
-        questions.append(
-            {
-                "id": question["id"],
-                "type": question["type"],
-                "text": question["text"],
-                "options": shuffled_options,
-                "difficulty": question.get("difficulty", "medium"),
-            }
-        )
-    random.shuffle(questions)
-    return questions
+# Attempts API (Server-side test attempts)
 
-
-def is_correct(question: dict[str, Any], selected: list[str]) -> bool:
-    """Безопасная сверка правильности: точное совпадение выбранных вариантов с правильными в БД."""
-    correct_ids = set(question.get("correct", []))
-    return set(selected) == correct_ids
-
-
-def grade_attempt(topic: dict[str, Any], answers: dict[str, list[str]]) -> list[dict[str, Any]]:
-    """Проверка ответов на сервере с защитой от подделки и подробным разбором."""
-    review = []
-    for question in topic.get("questions", []):
-        selected = answers.get(question["id"], [])
-        if not isinstance(selected, list):
-            selected = []
-        valid_ids = {option["id"] for option in question.get("options", [])}
-        cleaned = [item for item in selected if item in valid_ids]
-        review.append(
-            {
-                "id": question["id"],
-                "text": question["text"],
-                "type": question["type"],
-                "options": [
-                    {"id": o["id"], "text": o["text"]}
-                    for o in question.get("options", [])
-                ],
-                "selected": cleaned,
-                "correct": question["correct"],
-                "is_correct": is_correct(question, cleaned),
-                "difficulty": question.get("difficulty", "medium"),
-                "explanation": question.get("explanation", ""),
-            }
-        )
-    return review
-
-
-def password_errors(password: str) -> list[str]:
-    """Правила надёжности: длина, цифра, строчная и заглавная буква."""
-    errors = []
-    if len(password) < 8:
-        errors.append("Пароль должен содержать не менее 8 символов.")
-    if not re.search(r"[0-9]", password):
-        errors.append("Пароль должен содержать хотя бы одну цифру.")
-    if not re.search(r"[a-zа-яё]", password):
-        errors.append("Пароль должен содержать строчную букву.")
-    if not re.search(r"[A-ZА-ЯЁ]", password):
-        errors.append("Пароль должен содержать заглавную букву.")
-    return errors
-
-
-def current_user() -> sqlite3.Row | None:
-    user_id = session.get("user_id")
-    if not user_id:
-        return None
-    return get_db().execute(
-        "SELECT id, username, role FROM users WHERE id = ?",
-        (user_id,),
+@app.route("/api/attempts", methods=["POST"])
+@login_required
+def create_attempt():
+    """Create a new test attempt."""
+    data = request.get_json() or {}
+    topic_id = (data.get("topic_id") or "").strip()
+    
+    if not topic_id:
+        return jsonify({"error": "Topic ID is required", "code": "MISSING_TOPIC"}), 400
+    
+    db = get_db()
+    
+    # Get topic info
+    topic = db.execute(
+        "SELECT time_limit_sec FROM topics WHERE id = ?",
+        (topic_id,)
     ).fetchone()
+    
+    if not topic:
+        return jsonify({"error": "Topic not found", "code": "TOPIC_NOT_FOUND"}), 404
+    
+    # Get questions for this topic
+    q_rows = db.execute(
+        "SELECT id, qid FROM questions WHERE topic_id = ?",
+        (topic_id,)
+    ).fetchall()
+    
+    if not q_rows:
+        return jsonify({"error": "No questions available for this topic", "code": "NO_QUESTIONS"}), 400
+    
+    # Create random question order
+    question_order = [row["qid"] for row in q_rows]
+    random.shuffle(question_order)
+    
+    # Calculate deadline
+    now = datetime.now(timezone.utc)
+    deadline = now + timedelta(seconds=topic["time_limit_sec"])
+    
+    # Create attempt
+    cursor = db.execute(
+        """
+        INSERT INTO attempts (user_id, topic_id, started_at, deadline_at, question_order_json, answers_json)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            session["user_id"],
+            topic_id,
+            now.isoformat(),
+            deadline.isoformat(),
+            json.dumps(question_order),
+            json.dumps({})
+        )
+    )
+    db.commit()
+    
+    return jsonify({
+        "success": True,
+        "attempt_id": cursor.lastrowid,
+        "started_at": now.isoformat(),
+        "deadline_at": deadline.isoformat(),
+        "time_remaining": topic["time_limit_sec"]
+    })
 
 
-def user_payload(user: sqlite3.Row) -> dict[str, Any]:
-    return {"id": user["id"], "username": user["username"], "role": user["role"]}
+@app.route("/api/attempts/<int:attempt_id>")
+@login_required
+def get_attempt(attempt_id: int):
+    """Get attempt status and details."""
+    db = get_db()
+    
+    attempt = db.execute(
+        """
+        SELECT id, topic_id, started_at, deadline_at, finished_at, status,
+               question_order_json, answers_json
+        FROM attempts
+        WHERE id = ? AND user_id = ?
+        """,
+        (attempt_id, session["user_id"])
+    ).fetchone()
+    
+    if not attempt:
+        return jsonify({"error": "Attempt not found", "code": "ATTEMPT_NOT_FOUND"}), 404
+    
+    # Calculate remaining time
+    deadline = datetime.fromisoformat(attempt["deadline_at"])
+    now = datetime.now(timezone.utc)
+    remaining = max(0, int((deadline - now).total_seconds()))
+    
+    # Check if expired
+    status = attempt["status"]
+    if status == "in_progress" and remaining <= 0:
+        status = "expired"
+        db.execute(
+            "UPDATE attempts SET status = 'expired' WHERE id = ?",
+            (attempt_id,)
+        )
+        db.commit()
+    
+    return jsonify({
+        "id": attempt["id"],
+        "topic_id": attempt["topic_id"],
+        "started_at": attempt["started_at"],
+        "deadline_at": attempt["deadline_at"],
+        "finished_at": attempt["finished_at"],
+        "status": status,
+        "question_order": json.loads(attempt["question_order_json"]),
+        "answers": json.loads(attempt["answers_json"]),
+        "time_remaining": remaining
+    })
 
 
-def login_required(role: str | None = None) -> Callable:
-    """Декоратор API: сессия обязательна, роль — по необходимости."""
+@app.route("/api/attempts/<int:attempt_id>/answer", methods=["PUT"])
+@login_required
+def save_answer(attempt_id: int):
+    """Save an answer for the attempt (auto-save)."""
+    data = request.get_json() or {}
+    question_id = (data.get("question_id") or "").strip()
+    answer = data.get("answer")  # Can be string or list
+    
+    if not question_id:
+        return jsonify({"error": "Question ID is required", "code": "MISSING_QUESTION"}), 400
+    
+    db = get_db()
+    
+    # Get attempt
+    attempt = db.execute(
+        """
+        SELECT deadline_at, status, answers_json
+        FROM attempts
+        WHERE id = ? AND user_id = ?
+        """,
+        (attempt_id, session["user_id"])
+    ).fetchone()
+    
+    if not attempt:
+        return jsonify({"error": "Attempt not found", "code": "ATTEMPT_NOT_FOUND"}), 404
+    
+    if attempt["status"] != "in_progress":
+        return jsonify({"error": "Attempt is not active", "code": "ATTEMPT_INACTIVE"}), 400
+    
+    # Check deadline
+    deadline = datetime.fromisoformat(attempt["deadline_at"])
+    if datetime.now(timezone.utc) > deadline:
+        db.execute(
+            "UPDATE attempts SET status = 'expired' WHERE id = ?",
+            (attempt_id,)
+        )
+        db.commit()
+        return jsonify({"error": "Time limit exceeded", "code": "TIME_EXPIRED"}), 400
+    
+    # Update answers
+    answers = json.loads(attempt["answers_json"])
+    answers[question_id] = answer
+    
+    db.execute(
+        "UPDATE attempts SET answers_json = ? WHERE id = ?",
+        (json.dumps(answers), attempt_id)
+    )
+    db.commit()
+    
+    return jsonify({"success": True, "saved": True})
 
-    def decorator(view: Callable) -> Callable:
-        @wraps(view)
-        def wrapped(*args: Any, **kwargs: Any):
-            user = current_user()
-            if user is None:
-                return jsonify({"error": "Нужна авторизация"}), 401
-            if role and user["role"] != role:
-                return jsonify({"error": "Недостаточно прав для этого действия"}), 403
-            g.user = user
-            return view(*args, **kwargs)
 
-        return wrapped
+@app.route("/api/attempts/<int:attempt_id>/submit", methods=["POST"])
+@login_required
+def submit_attempt(attempt_id: int):
+    """Submit the attempt and calculate results."""
+    db = get_db()
+    
+    # Get attempt
+    attempt = db.execute(
+        """
+        SELECT topic_id, started_at, deadline_at, status, question_order_json, answers_json
+        FROM attempts
+        WHERE id = ? AND user_id = ?
+        """,
+        (attempt_id, session["user_id"])
+    ).fetchone()
+    
+    if not attempt:
+        return jsonify({"error": "Attempt not found", "code": "ATTEMPT_NOT_FOUND"}), 404
+    
+    if attempt["status"] not in ("in_progress", "expired"):
+        return jsonify({"error": "Attempt already submitted", "code": "ALREADY_SUBMITTED"}), 400
+    
+    # Calculate duration
+    started = datetime.fromisoformat(attempt["started_at"])
+    finished = datetime.now(timezone.utc)
+    duration = int((finished - started).total_seconds())
+    
+    # Check for suspicious speed (less than 2 seconds per question)
+    question_order = json.loads(attempt["question_order_json"])
+    suspicious = len(question_order) > 0 and duration < len(question_order) * 2
+    
+    # Get questions with correct answers
+    q_rows = db.execute(
+        """
+        SELECT q.qid, q.type, q.text, q.explanation, q.difficulty,
+               o.option_id, o.option_text, o.is_correct
+        FROM questions q
+        JOIN options o ON o.question_id = q.id
+        WHERE q.topic_id = ?
+        ORDER BY q.id ASC
+        """,
+        (attempt["topic_id"],)
+    ).fetchall()
+    
+    # Build question data
+    questions_data = {}
+    for row in q_rows:
+        qid = row["qid"]
+        if qid not in questions_data:
+            questions_data[qid] = {
+                "qid": qid,
+                "type": row["type"],
+                "text": row["text"],
+                "explanation": row["explanation"],
+                "difficulty": row["difficulty"],
+                "options": [],
+                "correct": []
+            }
+        questions_data[qid]["options"].append({
+            "id": row["option_id"],
+            "text": row["option_text"]
+        })
+        if row["is_correct"]:
+            questions_data[qid]["correct"].append(row["option_id"])
+    
+    # Calculate score using partial scoring for multiple choice
+    answers = json.loads(attempt["answers_json"])
+    score = 0
+    max_score = len(questions_data)
+    review = []
+    
+    for qid, qdata in questions_data.items():
+        user_answer = answers.get(qid, [] if qdata["type"] == "multiple" else "")
+        correct = qdata["correct"]
+        
+        if qdata["type"] == "single":
+            is_correct = user_answer == correct[0] if correct else False
+            if is_correct:
+                score += 1
+        else:  # multiple - partial scoring
+            if correct:
+                selected_correct = sum(1 for a in (user_answer if isinstance(user_answer, list) else [user_answer]) if a in correct)
+                selected_incorrect = sum(1 for a in (user_answer if isinstance(user_answer, list) else [user_answer]) if a not in correct)
+                question_score = max(0, (selected_correct - selected_incorrect) / len(correct))
+                score += question_score
+        
+        review.append({
+            "qid": qid,
+            "text": qdata["text"],
+            "type": qdata["type"],
+            "user_answer": user_answer,
+            "correct": correct,
+            "explanation": qdata["explanation"],
+            "difficulty": qdata["difficulty"]
+        })
+    
+    percent = round((score / max_score) * 100, 1) if max_score > 0 else 0
+    
+    # Get topic title
+    topic_row = db.execute(
+        "SELECT title FROM topics WHERE id = ?", (attempt["topic_id"],)
+    ).fetchone()
+    topic_title = topic_row["title"] if topic_row else attempt["topic_id"]
+    
+    # Save result
+    db.execute(
+        """
+        INSERT INTO results 
+        (user_id, topic_id, topic_title, score, max_score, percent, duration_sec, finished_at, review_json, attempt_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            session["user_id"],
+            attempt["topic_id"],
+            topic_title,
+            int(score),
+            max_score,
+            percent,
+            duration,
+            finished.isoformat(),
+            json.dumps(review, ensure_ascii=False),
+            attempt_id
+        )
+    )
+    
+    # Update attempt status
+    db.execute(
+        """
+        UPDATE attempts 
+        SET status = 'submitted', finished_at = ?, duration_sec = ?, suspicious_flag = ?
+        WHERE id = ?
+        """,
+        (finished.isoformat(), duration, 1 if suspicious else 0, attempt_id)
+    )
+    
+    db.commit()
+    
+    return jsonify({
+        "success": True,
+        "result": {
+            "score": round(score, 2),
+            "max_score": max_score,
+            "percent": percent,
+            "duration_sec": duration,
+            "suspicious": suspicious,
+            "review": review
+        }
+    })
 
-    return decorator
 
-
-def build_teacher_stats() -> dict[str, Any]:
-    """Сводка по всем попыткам студентов на основе данных из SQLite."""
+@app.route("/api/results")
+@login_required
+def get_results():
+    """Get user's test results."""
     db = get_db()
     rows = db.execute(
         """
-        SELECT r.topic_id, r.topic_title, r.percent, r.duration_sec, r.finished_at,
-               r.review_json, u.username
+        SELECT r.id, r.topic_id, r.topic_title, r.score, r.max_score, r.percent,
+               r.duration_sec, r.finished_at, a.suspicious_flag
         FROM results r
-        JOIN users u ON u.id = r.user_id
+        LEFT JOIN attempts a ON a.id = r.attempt_id
+        WHERE r.user_id = ?
         ORDER BY r.finished_at DESC
-        """
+        """,
+        (session["user_id"],)
     ).fetchall()
-
-    topics_list = get_all_topics()
-    per_topic: dict[str, dict[str, Any]] = {}
-    for topic in topics_list:
-        topic_id = topic["id"]
-        per_topic[topic_id] = {
-            "id": topic_id,
-            "title": topic["title"],
-            "attempts": 0,
-            "percent_sum": 0.0,
-            "time_sum": 0,
-            "missed_questions": {},
+    
+    return jsonify([
+        {
+            "id": row["id"],
+            "topic_id": row["topic_id"],
+            "topic_title": row["topic_title"],
+            "score": row["score"],
+            "max_score": row["max_score"],
+            "percent": row["percent"],
+            "duration_sec": row["duration_sec"],
+            "finished_at": row["finished_at"],
+            "suspicious": bool(row["suspicious_flag"])
         }
+        for row in rows
+    ])
 
-    for row in rows:
-        topic_id = row["topic_id"]
-        if topic_id not in per_topic:
-            per_topic[topic_id] = {
-                "id": topic_id,
-                "title": row["topic_title"],
-                "attempts": 0,
-                "percent_sum": 0.0,
-                "time_sum": 0,
-                "missed_questions": {},
-            }
-        bucket = per_topic[topic_id]
-        bucket["attempts"] += 1
-        bucket["percent_sum"] += float(row["percent"])
-        bucket["time_sum"] += int(row["duration_sec"])
-        try:
-            review_items = json.loads(row["review_json"])
-        except Exception:
-            review_items = []
-        for item in review_items:
-            if item.get("is_correct"):
-                continue
-            qid = item.get("id", "")
-            missed = bucket["missed_questions"]
-            if qid not in missed:
-                missed[qid] = {"id": qid, "text": item.get("text", qid), "errors": 0}
-            missed[qid]["errors"] += 1
 
-    topics_out = []
-    weak_topics = []
-    for bucket in per_topic.values():
-        count = bucket["attempts"]
-        avg = round(bucket["percent_sum"] / count, 1) if count else 0.0
-        avg_time = round(bucket["time_sum"] / count) if count else 0
-        hardest = sorted(
-            bucket["missed_questions"].values(),
-            key=lambda item: item["errors"],
-            reverse=True,
-        )[:3]
-        row = {
-            "id": bucket["id"],
-            "title": bucket["title"],
-            "attempts": count,
-            "avg_percent": avg,
-            "avg_time_sec": avg_time,
-            "hardest_questions": hardest,
-            "is_weak": count > 0 and avg < 60,
-        }
-        topics_out.append(row)
-        if row["is_weak"]:
-            weak_topics.append(row["title"])
-
-    scored = db.execute(
+@app.route("/api/results/<int:result_id>")
+@login_required
+def get_result_detail(result_id: int):
+    """Get detailed result with review."""
+    db = get_db()
+    row = db.execute(
         """
-        SELECT r.score, r.max_score, r.percent, r.duration_sec, r.topic_title,
-               r.finished_at, u.username AS student
+        SELECT r.topic_id, r.topic_title, r.score, r.max_score, r.percent,
+               r.duration_sec, r.finished_at, r.review_json
         FROM results r
-        JOIN users u ON u.id = r.user_id
-        ORDER BY r.id DESC
-        LIMIT 12
-        """
-    ).fetchall()
-    recent = [dict(item) for item in scored]
-
-    users = db.execute(
-        """
-        SELECT u.id, u.username, u.role,
-               COUNT(r.id) AS attempts,
-               ROUND(AVG(r.percent), 1) AS avg_percent
-        FROM users u
-        LEFT JOIN results r ON r.user_id = u.id
-        GROUP BY u.id
-        ORDER BY u.role DESC, u.username
-        """
-    ).fetchall()
-
-    return {
-        "total_attempts": len(rows),
-        "topics": topics_out,
-        "weak_topics": weak_topics,
-        "recent": recent,
-        "users": [dict(user) for user in users],
-    }
-
-
-with app.app_context():
-    init_db()
-
-
-@app.get("/")
-def index() -> str:
-    return render_template("index.html")
-
-
-@app.get("/api/locales/<lang>")
-def api_locales(lang: str):
-    """Отдаёт JSON-файл локализации (ru или kk)."""
-    clean_lang = "kk" if lang == "kk" else "ru"
-    loc_file = LOCALES_DIR / f"{clean_lang}.json"
-    if not loc_file.exists():
-        return jsonify({"error": "Locale not found"}), 404
-    with loc_file.open(encoding="utf-8") as f:
-        data = json.load(f)
-    return jsonify(data)
-
-
-# ============================================================================
-# АВТОРИЗАЦИЯ И СЕССИИ
-# ============================================================================
-
-
-@app.get("/api/me")
-def api_me():
-    user = current_user()
-    if user is None:
-        return jsonify({"user": None})
-    return jsonify({"user": user_payload(user)})
-
-
-@app.post("/api/register")
-def api_register():
-    payload = request.get_json(silent=True) or {}
-    username = str(payload.get("username") or "").strip()
-    password = str(payload.get("password") or "")
-    role = str(payload.get("role") or "student").strip().lower()
-
-    if not USERNAME_RE.fullmatch(username):
-        return jsonify({"error": "Логин: 3–32 символа, только латиница, цифры и _."}), 400
-    if role not in ROLES:
-        return jsonify({"error": "Роль может быть только student или teacher."}), 400
-
-    issues = password_errors(password)
-    if issues:
-        return jsonify({"error": " ".join(issues), "details": issues}), 400
-
-    db = get_db()
-    exists = db.execute(
-        "SELECT id FROM users WHERE username = ? COLLATE NOCASE",
-        (username,),
+        WHERE r.id = ? AND r.user_id = ?
+        """,
+        (result_id, session["user_id"])
     ).fetchone()
-    if exists:
-        return jsonify({"error": "Такой логин уже занят. Выберите другой."}), 409
+    
+    if not row:
+        return jsonify({"error": "Result not found", "code": "RESULT_NOT_FOUND"}), 404
+    
+    return jsonify({
+        "topic_id": row["topic_id"],
+        "topic_title": row["topic_title"],
+        "score": row["score"],
+        "max_score": row["max_score"],
+        "percent": row["percent"],
+        "duration_sec": row["duration_sec"],
+        "finished_at": row["finished_at"],
+        "review": json.loads(row["review_json"])
+    })
 
+
+# Teacher/admin routes
+
+@app.route("/api/teacher/stats")
+@role_required("teacher", "admin")
+def get_teacher_stats():
+    """Get teacher dashboard stats."""
+    db = get_db()
+    
+    # Total students
+    student_count = db.execute(
+        "SELECT COUNT(*) AS cnt FROM users WHERE role = 'student'"
+    ).fetchone()["cnt"]
+    
+    # Total topics
+    topic_count = db.execute(
+        "SELECT COUNT(*) AS cnt FROM topics"
+    ).fetchone()["cnt"]
+    
+    # Total questions
+    question_count = db.execute(
+        "SELECT COUNT(*) AS cnt FROM questions"
+    ).fetchone()["cnt"]
+    
+    # Recent attempts
+    recent_attempts = db.execute(
+        """
+        SELECT a.id, a.started_at, a.status, t.title AS topic_title,
+               u.username
+        FROM attempts a
+        JOIN topics t ON t.id = a.topic_id
+        JOIN users u ON u.id = a.user_id
+        ORDER BY a.started_at DESC
+        LIMIT 10
+        """
+    ).fetchall()
+    
+    return jsonify({
+        "stats": {
+            "students": student_count,
+            "topics": topic_count,
+            "questions": question_count
+        },
+        "recent_attempts": [
+            {
+                "id": row["id"],
+                "started_at": row["started_at"],
+                "status": row["status"],
+                "topic_title": row["topic_title"],
+                "username": row["username"]
+            }
+            for row in recent_attempts
+        ]
+    })
+
+
+@app.route("/api/teacher/questions", methods=["POST"])
+@role_required("teacher", "admin")
+def create_question():
+    """Create a new question."""
+    data = request.get_json() or {}
+    
+    topic_id = (data.get("topic_id") or "").strip()
+    qid = (data.get("qid") or "").strip()
+    q_type = (data.get("type") or "single").strip()
+    text = (data.get("text") or "").strip()
+    options = data.get("options") or []
+    correct = data.get("correct") or []
+    difficulty = (data.get("difficulty") or "medium").strip()
+    explanation = (data.get("explanation") or "").strip()
+    
+    # Validation
+    if not topic_id or not text or not options or not correct:
+        return jsonify({"error": "Missing required fields", "code": "MISSING_FIELDS"}), 400
+    
+    if difficulty not in DIFFICULTIES:
+        difficulty = "medium"
+    
+    if q_type not in ("single", "multiple"):
+        q_type = "single"
+    
+    # Generate qid if not provided
+    if not qid:
+        qid = f"{topic_id}_{secrets.token_hex(4)}"
+    
+    db = get_db()
+    
+    # Check if qid exists
+    existing = db.execute(
+        "SELECT id FROM questions WHERE qid = ?",
+        (qid,)
+    ).fetchone()
+    
+    if existing:
+        return jsonify({"error": "Question ID already exists", "code": "QID_EXISTS"}), 409
+    
+    # Insert question
     cursor = db.execute(
-        "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
-        (username, generate_password_hash(password), role),
-    )
-    db.commit()
-
-    session.clear()
-    session.permanent = True
-    session["user_id"] = cursor.lastrowid
-    user = current_user()
-    return jsonify({"user": user_payload(user)}), 201
-
-
-@app.post("/api/login")
-def api_login():
-    payload = request.get_json(silent=True) or {}
-    username = str(payload.get("username") or "").strip()
-    password = str(payload.get("password") or "")
-
-    row = get_db().execute(
-        "SELECT id, username, role, password_hash FROM users WHERE username = ? COLLATE NOCASE",
-        (username,),
-    ).fetchone()
-    if row is None:
-        return jsonify({"error": "Пользователь с таким логином не найден."}), 401
-    if not check_password_hash(row["password_hash"], password):
-        return jsonify({"error": "Неверный пароль."}), 401
-
-    session.clear()
-    session.permanent = True
-    session["user_id"] = row["id"]
-    return jsonify({"user": {"id": row["id"], "username": row["username"], "role": row["role"]}})
-
-
-@app.post("/api/logout")
-def api_logout():
-    session.clear()
-    return jsonify({"ok": True})
-
-
-# ============================================================================
-# ТЕМЫ (ДЛЯ ВСЕХ АВТОРИЗОВАННЫХ И СТУДЕНТОВ)
-# ============================================================================
-
-
-@app.get("/api/topics")
-@login_required()
-def api_topics():
-    topics = [public_topic(t) for t in get_all_topics()]
-    return jsonify({"topics": topics})
-
-
-@app.get("/api/topics/<topic_id>")
-@login_required("student")
-def api_topic(topic_id: str):
-    topic = get_topic(topic_id)
-    if topic is None:
-        return jsonify({"error": "Тема не найдена"}), 404
-    return jsonify({"topic": public_topic(topic), "questions": public_questions(topic)})
-
-
-# ============================================================================
-# CRUD ТЕМ (ПРЕПОДАВАТЕЛЬ)
-# ============================================================================
-
-
-@app.post("/api/topics/manage")
-@login_required("teacher")
-def api_create_topic():
-    payload = request.get_json(silent=True) or {}
-    title = str(payload.get("title") or "").strip()
-    subtitle = str(payload.get("subtitle") or "").strip()
-    icon = str(payload.get("icon") or "hash").strip().lower()
-    if icon not in ICONS:
-        icon = "hash"
-
-    if len(title) < 2:
-        return jsonify({"error": "Название темы должно содержать не менее 2 символов."}), 400
-
-    time_limit_raw = payload.get("time_limit_sec", 480)
-    try:
-        time_limit_sec = int(time_limit_raw)
-        if time_limit_sec < 30 or time_limit_sec > 7200:
-            time_limit_sec = 480
-    except (TypeError, ValueError):
-        time_limit_sec = 480
-
-    base_slug = slugify(title)
-    slug = base_slug
-    db = get_db()
-    counter = 1
-    while db.execute("SELECT 1 FROM topics WHERE id = ?", (slug,)).fetchone():
-        slug = f"{base_slug}-{counter}"
-        counter += 1
-
-    db.execute(
         """
-        INSERT INTO topics (id, title, subtitle, icon, time_limit_sec, created_by)
+        INSERT INTO questions 
+        (topic_id, qid, type, text, options_json, correct_json, difficulty, explanation, created_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            topic_id, qid, q_type, text,
+            json.dumps(options, ensure_ascii=False),
+            json.dumps(correct, ensure_ascii=False),
+            difficulty, explanation, session["user_id"]
+        )
+    )
+    
+    question_db_id = cursor.lastrowid
+    
+    # Insert options
+    for opt in options:
+        opt_id = opt.get("id", "")
+        opt_text = opt.get("text", "")
+        is_correct = 1 if opt_id in correct else 0
+        
+        db.execute(
+            """
+            INSERT INTO options (question_id, option_id, option_text, is_correct)
+            VALUES (?, ?, ?, ?)
+            """,
+            (question_db_id, opt_id, opt_text, is_correct)
+        )
+    
+    db.commit()
+    
+    return jsonify({
+        "success": True,
+        "question_id": qid,
+        "message": "Question created successfully"
+    }), 201
+
+
+# Invite code endpoint for teachers
+@app.route("/api/invite-code")
+@login_required
+def get_invite_code():
+    """Get teacher invite code (admin only)."""
+    # Check if user is admin
+    db = get_db()
+    user = db.execute(
+        "SELECT role FROM users WHERE id = ?",
+        (session["user_id"],)
+    ).fetchone()
+    
+    if not user or user["role"] not in ("admin", "teacher"):
+        return jsonify({"error": "Forbidden", "code": "INSUFFICIENT_PRIVILEGES"}), 403
+    
+    return jsonify({
+        "invite_code": TEACHER_INVITE_CODE if user["role"] == "admin" else "[REDACTED]"
+    })
+
+
+# Additional API routes for topics, questions, attempts, and results
+
+@app.route("/api/topics")
+@login_required
+def get_topics():
+    """Get all topics with question counts."""
+    db = get_db()
+    rows = db.execute(
+        """
+        SELECT t.id, t.title, t.subtitle, t.icon, t.time_limit_sec,
+               COUNT(q.id) AS question_count
+        FROM topics t
+        LEFT JOIN questions q ON q.topic_id = t.id
+        GROUP BY t.id
+        ORDER BY t.rowid ASC
+        """
+    ).fetchall()
+    
+    return jsonify([{
+        "id": row["id"],
+        "title": row["title"],
+        "subtitle": row["subtitle"],
+        "icon": row["icon"],
+        "time_limit_sec": row["time_limit_sec"],
+        "question_count": row["question_count"]
+    } for row in rows])
+
+
+@app.route("/api/topics/<topic_id>")
+@login_required
+def get_topic(topic_id: str):
+    """Get topic with questions for test."""
+    db = get_db()
+    
+    # Get topic info
+    topic = db.execute(
+        "SELECT id, title, subtitle, icon, time_limit_sec FROM topics WHERE id = ?",
+        (topic_id,)
+    ).fetchone()
+    
+    if not topic:
+        return jsonify({"error": "Topic not found", "code": "TOPIC_NOT_FOUND"}), 404
+    
+    # Get questions with options
+    q_rows = db.execute(
+        """
+        SELECT q.id, q.qid, q.type, q.text, q.difficulty, q.explanation, q.bloom_level
+        FROM questions q
+        WHERE q.topic_id = ?
+        ORDER BY q.id ASC
+        """,
+        (topic_id,)
+    ).fetchall()
+    
+    questions = []
+    for row in q_rows:
+        # Get options for this question
+        opt_rows = db.execute(
+            """
+            SELECT option_id, option_text
+            FROM options
+            WHERE question_id = ?
+            ORDER BY id ASC
+            """,
+            (row["id"],)
+        ).fetchall()
+        
+        options = [{"id": o["option_id"], "text": o["option_text"]} for o in opt_rows]
+        
+        questions.append({
+            "id": row["qid"],
+            "type": row["type"],
+            "text": row["text"],
+            "difficulty": row["difficulty"],
+            "explanation": row["explanation"],
+            "bloom_level": row["bloom_level"],
+            "options": options
+        })
+    
+    return jsonify({
+        "topic": {
+            "id": topic["id"],
+            "title": topic["title"],
+            "subtitle": topic["subtitle"],
+            "icon": topic["icon"],
+            "time_limit_sec": topic["time_limit_sec"]
+        },
+        "questions": questions
+    })
+
+
+@app.route("/api/attempts", methods=["POST"])
+@login_required
+def create_attempt():
+    """Create a new test attempt (server-side timer start)."""
+    data = request.get_json() or {}
+    topic_id = data.get("topic_id")
+    
+    if not topic_id:
+        return jsonify({"error": "Topic ID required", "code": "MISSING_TOPIC"}), 400
+    
+    db = get_db()
+    
+    # Get topic time limit
+    topic = db.execute(
+        "SELECT time_limit_sec FROM topics WHERE id = ?",
+        (topic_id,)
+    ).fetchone()
+    
+    if not topic:
+        return jsonify({"error": "Topic not found", "code": "TOPIC_NOT_FOUND"}), 404
+    
+    # Check for existing in-progress attempt
+    existing = db.execute(
+        """
+        SELECT id, deadline_at FROM attempts
+        WHERE user_id = ? AND topic_id = ? AND status = 'in_progress'
+        ORDER BY id DESC LIMIT 1
+        """,
+        (session["user_id"], topic_id)
+    ).fetchone()
+    
+    if existing:
+        # Return existing attempt
+        return jsonify({
+            "attempt_id": existing["id"],
+            "deadline_at": existing["deadline_at"],
+            "message": "Resuming existing attempt"
+        })
+    
+    # Create new attempt
+    now = datetime.now(timezone.utc)
+    deadline = now + timedelta(seconds=topic["time_limit_sec"])
+    
+    # Get question order (shuffle on server)
+    q_rows = db.execute(
+        "SELECT qid FROM questions WHERE topic_id = ?",
+        (topic_id,)
+    ).fetchall()
+    
+    question_ids = [row["qid"] for row in q_rows]
+    random.shuffle(question_ids)
+    
+    cursor = db.execute(
+        """
+        INSERT INTO attempts (user_id, topic_id, started_at, deadline_at, question_order_json, answers_json)
         VALUES (?, ?, ?, ?, ?, ?)
         """,
-        (slug, title, subtitle, icon, time_limit_sec, g.user["id"]),
+        (
+            session["user_id"],
+            topic_id,
+            now.isoformat(),
+            deadline.isoformat(),
+            json.dumps(question_ids),
+            json.dumps({})
+        )
     )
     db.commit()
+    
+    return jsonify({
+        "attempt_id": cursor.lastrowid,
+        "started_at": now.isoformat(),
+        "deadline_at": deadline.isoformat(),
+        "time_limit_sec": topic["time_limit_sec"]
+    }), 201
 
-    new_topic = get_topic(slug)
-    return jsonify({"ok": True, "topic": public_topic(new_topic)}), 201
 
-
-@app.put("/api/topics/manage/<topic_id>")
-@login_required("teacher")
-def api_update_topic(topic_id: str):
+@app.route("/api/attempts/<int:attempt_id>/answer", methods=["PUT"])
+@login_required
+def save_answer(attempt_id: int):
+    """Auto-save an answer during a test."""
+    data = request.get_json() or {}
+    question_id = data.get("question_id")
+    answer = data.get("answer")
+    
+    if question_id is None or answer is None:
+        return jsonify({"error": "Question ID and answer required", "code": "MISSING_DATA"}), 400
+    
     db = get_db()
-    existing = db.execute(
-        "SELECT id, title, subtitle, icon, time_limit_sec FROM topics WHERE id = ?",
-        (topic_id,),
-    ).fetchone()
-    if existing is None:
-        return jsonify({"error": "Тема не найдена."}), 404
-
-    payload = request.get_json(silent=True) or {}
-    title = str(payload.get("title") or existing["title"]).strip()
-    subtitle = str(payload.get("subtitle", existing["subtitle"])).strip()
-    icon = str(payload.get("icon") or existing["icon"]).strip().lower()
-    if icon not in ICONS:
-        icon = existing["icon"]
-
-    if len(title) < 2:
-        return jsonify({"error": "Название темы должно содержать не менее 2 символов."}), 400
-
-    time_limit_raw = payload.get("time_limit_sec", existing["time_limit_sec"])
-    try:
-        time_limit_sec = int(time_limit_raw)
-        if time_limit_sec < 30 or time_limit_sec > 7200:
-            time_limit_sec = existing["time_limit_sec"]
-    except (TypeError, ValueError):
-        time_limit_sec = existing["time_limit_sec"]
-
-    db.execute(
+    
+    # Get attempt and verify ownership
+    attempt = db.execute(
         """
-        UPDATE topics
-        SET title = ?, subtitle = ?, icon = ?, time_limit_sec = ?
-        WHERE id = ?
+        SELECT id, deadline_at, status, answers_json 
+        FROM attempts 
+        WHERE id = ? AND user_id = ?
         """,
-        (title, subtitle, icon, time_limit_sec, topic_id),
+        (attempt_id, session["user_id"])
+    ).fetchone()
+    
+    if not attempt:
+        return jsonify({"error": "Attempt not found", "code": "ATTEMPT_NOT_FOUND"}), 404
+    
+    if attempt["status"] != "in_progress":
+        return jsonify({"error": "Attempt is not in progress", "code": "ATTEMPT_COMPLETED"}), 400
+    
+    # Check deadline
+    deadline = datetime.fromisoformat(attempt["deadline_at"])
+    if datetime.now(timezone.utc) > deadline:
+        # Mark as expired
+        db.execute(
+            "UPDATE attempts SET status = 'expired' WHERE id = ?",
+            (attempt_id,)
+        )
+        db.commit()
+        return jsonify({"error": "Time limit exceeded", "code": "TIME_EXPIRED"}), 400
+    
+    # Update answers
+    answers = json.loads(attempt["answers_json"])
+    answers[question_id] = answer
+    
+    db.execute(
+        "UPDATE attempts SET answers_json = ? WHERE id = ?",
+        (json.dumps(answers), attempt_id)
     )
     db.commit()
+    
+    return jsonify({"success": True, "message": "Answer saved"})
 
-    updated = get_topic(topic_id)
-    return jsonify({"ok": True, "topic": public_topic(updated)})
 
-
-@app.delete("/api/topics/manage/<topic_id>")
-@login_required("teacher")
-def api_delete_topic(topic_id: str):
+@app.route("/api/attempts/<int:attempt_id>/submit", methods=["POST"])
+@login_required
+def submit_attempt(attempt_id: int):
+    """Submit a test attempt and calculate results."""
     db = get_db()
-    existing = db.execute("SELECT id FROM topics WHERE id = ?", (topic_id,)).fetchone()
-    if existing is None:
-        return jsonify({"error": "Тема не найдена."}), 404
-
-    db.execute("DELETE FROM questions WHERE topic_id = ?", (topic_id,))
-    db.execute("DELETE FROM topics WHERE id = ?", (topic_id,))
-    db.commit()
-
-    return jsonify({"ok": True})
-
-
-# ============================================================================
-# CRUD ВОПРОСОВ (ПРЕПОДАВАТЕЛЬ)
-# ============================================================================
-
-
-@app.get("/api/questions/list")
-@login_required("teacher")
-def api_questions_list():
-    topic_id = request.args.get("topic_id", "").strip()
-    search = request.args.get("search", "").strip()
-    difficulty = request.args.get("difficulty", "").strip()
-
-    conditions = []
-    params: list[Any] = []
-
-    if topic_id:
-        conditions.append("q.topic_id = ?")
-        params.append(topic_id)
-
-    if difficulty:
-        conditions.append("q.difficulty = ?")
-        params.append(difficulty)
-
-    if search:
-        conditions.append("q.text LIKE ?")
-        params.append(f"%{search}%")
-
-    where_sql = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-    query = f"""
-        SELECT q.id, q.topic_id, q.qid, q.type, q.text, q.options_json,
-               q.correct_json, q.difficulty, q.explanation, q.created_by,
-               t.title AS topic_title
-        FROM questions q
-        LEFT JOIN topics t ON t.id = q.topic_id
-        {where_sql}
-        ORDER BY q.id DESC
-    """
-    db = get_db()
-    rows = db.execute(query, params).fetchall()
-    questions = []
-    for r in rows:
-        q_db_id = r["id"]
+    
+    # Get attempt
+    attempt = db.execute(
+        """
+        SELECT id, topic_id, started_at, deadline_at, status, question_order_json, answers_json
+        FROM attempts
+        WHERE id = ? AND user_id = ?
+        """,
+        (attempt_id, session["user_id"])
+    ).fetchone()
+    
+    if not attempt:
+        return jsonify({"error": "Attempt not found", "code": "ATTEMPT_NOT_FOUND"}), 404
+    
+    if attempt["status"] != "in_progress":
+        return jsonify({"error": "Attempt already submitted", "code": "ALREADY_SUBMITTED"}), 400
+    
+    # Check if deadline passed
+    now = datetime.now(timezone.utc)
+    deadline = datetime.fromisoformat(attempt["deadline_at"])
+    time_expired = now > deadline
+    
+    # Calculate duration
+    started_at = datetime.fromisoformat(attempt["started_at"])
+    duration_sec = int((now - started_at).total_seconds())
+    
+    # Get questions with correct answers
+    question_order = json.loads(attempt["question_order_json"])
+    answers = json.loads(attempt["answers_json"])
+    
+    # Get topic info
+    topic = db.execute(
+        "SELECT title FROM topics WHERE id = ?",
+        (attempt["topic_id"],)
+    ).fetchone()
+    
+    topic_title = topic["title"] if topic else "Unknown"
+    
+    # Calculate score
+    score = 0
+    max_score = 0
+    review = []
+    
+    for qid in question_order:
+        # Get question data
+        q_row = db.execute(
+            """
+            SELECT q.id, q.type, q.text, q.explanation
+            FROM questions q
+            WHERE q.qid = ?
+            """,
+            (qid,)
+        ).fetchone()
+        
+        if not q_row:
+            continue
+        
+        # Get correct options
         opt_rows = db.execute(
             """
             SELECT option_id, option_text, is_correct
             FROM options
             WHERE question_id = ?
-            ORDER BY id ASC
             """,
-            (q_db_id,),
+            (q_row["id"],)
         ).fetchall()
-
-        if opt_rows:
-            options = [
-                {
-                    "id": o["option_id"],
-                    "text": o["option_text"],
-                    "is_correct": bool(o["is_correct"]),
-                }
-                for o in opt_rows
-            ]
-            correct = [o["option_id"] for o in opt_rows if o["is_correct"]]
-        else:
-            try:
-                raw_opts = json.loads(r["options_json"]) if r["options_json"] else []
-                correct = json.loads(r["correct_json"]) if r["correct_json"] else []
-            except Exception:
-                raw_opts = []
-                correct = []
-            options = [
-                {
-                    "id": str(o.get("id") or ""),
-                    "text": str(o.get("text") or ""),
-                    "is_correct": str(o.get("id") or "").lower() in [str(c).lower() for c in correct],
-                }
-                for o in raw_opts
-            ]
-
-        questions.append(
-            {
-                "id": r["qid"],
-                "qid": r["qid"],
-                "topic_id": r["topic_id"],
-                "topic_title": r["topic_title"] or r["topic_id"],
-                "type": r["type"],
-                "text": r["text"],
-                "options": options,
-                "correct": correct,
-                "difficulty": r["difficulty"],
-                "explanation": r["explanation"],
-                "created_by": r["created_by"],
-            }
-        )
-    return jsonify({"questions": questions})
-
-
-@app.post("/api/questions")
-@login_required("teacher")
-def api_add_question():
-    """Добавление вопроса преподавателем в выбранную тему с динамическими вариантами."""
-    payload = request.get_json(silent=True) or {}
-    topic_id = str(payload.get("topic_id") or "").strip()
-    q_type = str(payload.get("type") or "").strip()
-    text = str(payload.get("text") or "").strip()
-    raw_options = payload.get("options")
-    raw_correct = payload.get("correct") or []
-    difficulty = str(payload.get("difficulty") or "medium").strip().lower()
-    explanation = str(payload.get("explanation") or "").strip()
-
-    if difficulty not in DIFFICULTIES:
-        difficulty = "medium"
-
-    db = get_db()
-    if get_topic(topic_id) is None:
-        return jsonify({"error": "Тема не найдена."}), 404
-    if q_type not in ("single", "multiple"):
-        return jsonify({"error": "Тип вопроса: single или multiple."}), 400
-    if len(text) < 8:
-        return jsonify({"error": "Текст вопроса слишком короткий (минимум 8 символов)."}), 400
-    if not isinstance(raw_options, list):
-        return jsonify({"error": "Некорректный формат вариантов ответов."}), 400
-
-    # Обрабатываем динамические варианты (от 2 до 6)
-    cleaned_options = []
-    correct_list = [str(c).strip().lower() for c in raw_correct]
-
-    for idx, opt in enumerate(raw_options[:6]):
-        if not isinstance(opt, dict):
-            continue
-        opt_text = str(opt.get("text") or "").strip()
-        if not opt_text:
-            continue
-        opt_id = str(opt.get("id") or chr(ord("a") + idx)).strip().lower()
-        is_corr = bool(opt.get("is_correct")) or (opt_id in correct_list)
-        cleaned_options.append({
-            "id": opt_id,
-            "text": opt_text[:300],
-            "is_correct": is_corr,
+        
+        correct_ids = [o["option_id"] for o in opt_rows if o["is_correct"]]
+        all_options = [{"id": o["option_id"], "text": o["option_text"]} for o in opt_rows]
+        
+        # Get user's answer
+        user_answer = answers.get(qid, [])
+        if not isinstance(user_answer, list):
+            user_answer = [user_answer]
+        
+        # Calculate points for this question
+        if q_row["type"] == "single":
+            max_score += 1
+            if user_answer and user_answer[0] in correct_ids:
+                score += 1
+                q_score = 1
+            else:
+                q_score = 0
+        else:  # multiple
+            max_score += len(correct_ids)
+            q_score = 0
+            for ans in user_answer:
+                if ans in correct_ids:
+                    score += 1
+                    q_score += 1
+                else:
+                    # Penalty for wrong answer
+                    q_score -= 1
+            q_score = max(0, q_score)
+        
+        review.append({
+            "question_id": qid,
+            "question_text": q_row["text"],
+            "user_answer": user_answer,
+            "correct_answer": correct_ids,
+            "options": all_options,
+            "explanation": q_row["explanation"],
+            "score": q_score,
+            "max_score": len(correct_ids) if q_row["type"] == "multiple" else 1
         })
-
-    if len(cleaned_options) < 2:
-        return jsonify({"error": "Нужно указать минимум 2 варианта ответа."}), 400
-
-    correct_count = sum(1 for o in cleaned_options if o["is_correct"])
-    if q_type == "single" and correct_count != 1:
-        return jsonify({"error": "Для одиночного выбора отметьте ровно один правильный вариант."}), 400
-    if q_type == "multiple" and correct_count < 1:
-        return jsonify({"error": "Для множественного выбора отметьте хотя бы один правильный вариант."}), 400
-
-    qid = f"custom-{uuid.uuid4().hex[:10]}"
-    cursor = db.execute(
-        """
-        INSERT INTO questions (
-            topic_id, qid, type, text, options_json, correct_json, difficulty, explanation, created_by
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            topic_id,
-            qid,
-            q_type,
-            text[:600],
-            json.dumps([{"id": o["id"], "text": o["text"]} for o in cleaned_options], ensure_ascii=False),
-            json.dumps([o["id"] for o in cleaned_options if o["is_correct"]], ensure_ascii=False),
-            difficulty,
-            explanation[:1000],
-            g.user["id"],
-        ),
-    )
-    new_q_id = cursor.lastrowid
-
-    # Вставляем варианты в нормализованную таблицу options
-    for opt in cleaned_options:
-        db.execute(
-            """
-            INSERT INTO options (question_id, option_id, option_text, is_correct)
-            VALUES (?, ?, ?, ?)
-            """,
-            (new_q_id, opt["id"], opt["text"], 1 if opt["is_correct"] else 0),
-        )
-
-    db.commit()
-    return jsonify({"ok": True, "id": qid, "qid": qid}), 201
-
-
-@app.put("/api/questions/<qid>")
-@login_required("teacher")
-def api_update_question(qid: str):
-    """Обновление вопроса и его вариантов в таблице options."""
-    db = get_db()
-    existing = db.execute(
-        """
-        SELECT id, topic_id, type, text, options_json, correct_json, difficulty, explanation
-        FROM questions
-        WHERE qid = ?
-        """,
-        (qid,),
-    ).fetchone()
-    if existing is None:
-        return jsonify({"error": "Вопрос не найден."}), 404
-
-    q_db_id = existing["id"]
-    payload = request.get_json(silent=True) or {}
-    topic_id = str(payload.get("topic_id") or existing["topic_id"]).strip()
-    q_type = str(payload.get("type") or existing["type"]).strip()
-    text = str(payload.get("text") or existing["text"]).strip()
-    raw_options = payload.get("options")
-    raw_correct = payload.get("correct") or []
-
-    difficulty = str(payload.get("difficulty") or existing["difficulty"]).strip().lower()
-    if difficulty not in DIFFICULTIES:
-        difficulty = existing["difficulty"]
-    explanation = str(payload.get("explanation", existing["explanation"])).strip()
-
-    if get_topic(topic_id) is None:
-        return jsonify({"error": "Тема не найдена."}), 404
-    if q_type not in ("single", "multiple"):
-        return jsonify({"error": "Тип вопроса: single или multiple."}), 400
-    if len(text) < 8:
-        return jsonify({"error": "Текст вопроса слишком короткий (минимум 8 символов)."}), 400
-
-    correct_list = [str(c).strip().lower() for c in raw_correct]
-    cleaned_options = []
-
-    if isinstance(raw_options, list):
-        for idx, opt in enumerate(raw_options[:6]):
-            if not isinstance(opt, dict):
-                continue
-            opt_text = str(opt.get("text") or "").strip()
-            if not opt_text:
-                continue
-            opt_id = str(opt.get("id") or chr(ord("a") + idx)).strip().lower()
-            is_corr = bool(opt.get("is_correct")) or (opt_id in correct_list)
-            cleaned_options.append({
-                "id": opt_id,
-                "text": opt_text[:300],
-                "is_correct": is_corr,
-            })
-
-    if len(cleaned_options) < 2:
-        return jsonify({"error": "Нужно указать минимум 2 варианта ответа."}), 400
-
-    correct_count = sum(1 for o in cleaned_options if o["is_correct"])
-    if q_type == "single" and correct_count != 1:
-        return jsonify({"error": "Для одиночного выбора отметьте ровно один правильный вариант."}), 400
-    if q_type == "multiple" and correct_count < 1:
-        return jsonify({"error": "Для множественного выбора отметьте хотя бы один правильный вариант."}), 400
-
-    # Обновляем вопрос
+    
+    # Calculate percentage
+    percent = round((score / max_score) * 100, 1) if max_score > 0 else 0
+    
+    # Flag suspiciously fast attempts
+    suspicious = False
+    if duration_sec < len(question_order) * 2:  # Less than 2 seconds per question
+        suspicious = True
+    
+    # Update attempt status
     db.execute(
         """
-        UPDATE questions
-        SET topic_id = ?, type = ?, text = ?, options_json = ?,
-            correct_json = ?, difficulty = ?, explanation = ?
+        UPDATE attempts 
+        SET status = ?, finished_at = ?, duration_sec = ?, suspicious_flag = ?
         WHERE id = ?
         """,
-        (
-            topic_id,
-            q_type,
-            text[:600],
-            json.dumps([{"id": o["id"], "text": o["text"]} for o in cleaned_options], ensure_ascii=False),
-            json.dumps([o["id"] for o in cleaned_options if o["is_correct"]], ensure_ascii=False),
-            difficulty,
-            explanation[:1000],
-            q_db_id,
-        ),
+        ("expired" if time_expired else "submitted", now.isoformat(), duration_sec, 1 if suspicious else 0, attempt_id)
     )
-
-    # Перезаписываем варианты в options
-    db.execute("DELETE FROM options WHERE question_id = ?", (q_db_id,))
-    for opt in cleaned_options:
-        db.execute(
-            """
-            INSERT INTO options (question_id, option_id, option_text, is_correct)
-            VALUES (?, ?, ?, ?)
-            """,
-            (q_db_id, opt["id"], opt["text"], 1 if opt["is_correct"] else 0),
-        )
-
+    
+    # Save result
+    review_json = json.dumps({
+        "questions": review,
+        "started_at": attempt["started_at"],
+        "finished_at": now.isoformat(),
+        "time_expired": time_expired,
+        "suspicious": suspicious
+    }, ensure_ascii=False)
+    
+    db.execute(
+        """
+        INSERT INTO results (user_id, topic_id, topic_title, score, max_score, percent, duration_sec, finished_at, review_json, attempt_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (session["user_id"], attempt["topic_id"], topic_title, score, max_score, percent, duration_sec, now.isoformat(), review_json, attempt_id)
+    )
+    
     db.commit()
-    return jsonify({"ok": True, "qid": qid})
+    
+    return jsonify({
+        "success": True,
+        "attempt_id": attempt_id,
+        "score": score,
+        "max_score": max_score,
+        "percent": percent,
+        "duration_sec": duration_sec,
+        "time_expired": time_expired,
+        "suspicious": suspicious,
+        "review": review
+    })
 
 
-@app.delete("/api/questions/<qid>")
-@login_required("teacher")
-def api_delete_question(qid: str):
-    """Удаление вопроса и его вариантов из options."""
-    db = get_db()
-    existing = db.execute("SELECT id FROM questions WHERE qid = ?", (qid,)).fetchone()
-    if existing is None:
-        return jsonify({"error": "Вопрос не найден."}), 404
-
-    q_db_id = existing["id"]
-    db.execute("DELETE FROM options WHERE question_id = ?", (q_db_id,))
-    db.execute("DELETE FROM questions WHERE id = ?", (q_db_id,))
-    db.commit()
-    return jsonify({"ok": True})
-
-
-# ============================================================================
-# ИМПОРТ И ЭКСПОРТ (ПРЕПОДАВАТЕЛЬ)
-# ============================================================================
-
-
-@app.get("/api/export/json")
-@login_required("teacher")
-def api_export_json():
-    """Экспорт всех тем и вопросов в формате JSON."""
-    topics_data = []
-    for t in get_all_topics():
-        full_t = get_topic(t["id"])
-        if full_t:
-            topics_data.append(
-                {
-                    "id": full_t["id"],
-                    "title": full_t["title"],
-                    "subtitle": full_t["subtitle"],
-                    "icon": full_t["icon"],
-                    "time_limit_sec": full_t["time_limit_sec"],
-                    "questions": [
-                        {
-                            "id": q["id"],
-                            "type": q["type"],
-                            "text": q["text"],
-                            "options": q["options"],
-                            "correct": q["correct"],
-                            "difficulty": q.get("difficulty", "medium"),
-                            "explanation": q.get("explanation", ""),
-                        }
-                        for q in full_t.get("questions", [])
-                    ],
-                }
-            )
-
-    payload = {
-        "format": "infotrainer-v2",
-        "exported_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "topics": topics_data,
-    }
-    content = json.dumps(payload, ensure_ascii=False, indent=2)
-    return Response(
-        content,
-        mimetype="application/json; charset=utf-8",
-        headers={"Content-Disposition": 'attachment; filename="infotrainer_export.json"'},
-    )
-
-
-@app.get("/api/export/csv")
-@login_required("teacher")
-def api_export_csv():
-    """Экспорт всех вопросов в формате CSV с поддержкой UTF-8 BOM."""
-    output = io.StringIO()
-    output.write("\ufeff")
-    writer = csv.writer(output)
-    writer.writerow(
-        [
-            "topic_id",
-            "topic_title",
-            "qid",
-            "type",
-            "difficulty",
-            "text",
-            "option_a",
-            "option_b",
-            "option_c",
-            "option_d",
-            "correct",
-            "explanation",
-        ]
-    )
-
+@app.route("/api/results")
+@login_required
+def get_results():
+    """Get user's test results."""
     db = get_db()
     rows = db.execute(
         """
-        SELECT q.qid, q.topic_id, q.type, q.text, q.options_json,
-               q.correct_json, q.difficulty, q.explanation, t.title AS topic_title
-        FROM questions q
-        LEFT JOIN topics t ON t.id = q.topic_id
-        ORDER BY t.rowid, q.id
-        """
+        SELECT r.id, r.topic_id, r.topic_title, r.score, r.max_score, r.percent,
+               r.duration_sec, r.finished_at
+        FROM results r
+        WHERE r.user_id = ?
+        ORDER BY r.finished_at DESC
+        """,
+        (session["user_id"],)
     ).fetchall()
-
-    for row in rows:
-        options = json.loads(row["options_json"]) if row["options_json"] else []
-        opts_map = {opt["id"].lower(): opt["text"] for opt in options if isinstance(opt, dict) and "id" in opt}
-        correct_list = json.loads(row["correct_json"]) if row["correct_json"] else []
-        correct_str = ",".join(correct_list)
-
-        writer.writerow(
-            [
-                row["topic_id"],
-                row["topic_title"] or "",
-                row["qid"],
-                row["type"],
-                row["difficulty"],
-                row["text"],
-                opts_map.get("a", ""),
-                opts_map.get("b", ""),
-                opts_map.get("c", ""),
-                opts_map.get("d", ""),
-                correct_str,
-                row["explanation"],
-            ]
-        )
-
-    return Response(
-        output.getvalue(),
-        mimetype="text/csv; charset=utf-8",
-        headers={"Content-Disposition": 'attachment; filename="infotrainer_questions.csv"'},
-    )
+    
+    return jsonify([{
+        "id": row["id"],
+        "topic_id": row["topic_id"],
+        "topic_title": row["topic_title"],
+        "score": row["score"],
+        "max_score": row["max_score"],
+        "percent": row["percent"],
+        "duration_sec": row["duration_sec"],
+        "finished_at": row["finished_at"]
+    } for row in rows])
 
 
-@app.post("/api/import/json")
-@login_required("teacher")
-def api_import_json():
-    """Импорт тем и вопросов из JSON. Дубликаты по qid пропускаются."""
-    payload = request.get_json(silent=True) or {}
-    topics_data = payload.get("topics")
-    if not isinstance(topics_data, list):
-        return jsonify({"error": "Неверный формат: ожидается список topics."}), 400
-
+@app.route("/api/results/<int:result_id>")
+@login_required
+def get_result_detail(result_id: int):
+    """Get detailed result with review."""
     db = get_db()
-    imported_topics = 0
-    imported_questions = 0
-    skipped_questions = 0
-
-    for t in topics_data:
-        if not isinstance(t, dict):
-            continue
-        title = str(t.get("title") or "").strip()
-        topic_id = str(t.get("id") or "").strip() or slugify(title)
-        if not topic_id or not title:
-            continue
-        subtitle = str(t.get("subtitle") or "").strip()
-        icon = str(t.get("icon") or "hash").strip().lower()
-        if icon not in ICONS:
-            icon = "hash"
-        time_limit_sec = int(t.get("time_limit_sec") or 480)
-
-        existing_topic = db.execute("SELECT id FROM topics WHERE id = ?", (topic_id,)).fetchone()
-        if existing_topic is None:
-            db.execute(
-                """
-                INSERT INTO topics (id, title, subtitle, icon, time_limit_sec, created_by)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (topic_id, title, subtitle, icon, time_limit_sec, g.user["id"]),
-            )
-            imported_topics += 1
-        else:
-            db.execute(
-                """
-                UPDATE topics
-                SET title = ?, subtitle = ?, icon = ?, time_limit_sec = ?
-                WHERE id = ?
-                """,
-                (title, subtitle, icon, time_limit_sec, topic_id),
-            )
-
-        for q in t.get("questions", []):
-            if not isinstance(q, dict):
-                continue
-            qid = str(q.get("id") or q.get("qid") or "").strip()
-            if not qid:
-                continue
-
-            existing_q = db.execute("SELECT id FROM questions WHERE qid = ?", (qid,)).fetchone()
-            if existing_q is not None:
-                skipped_questions += 1
-                continue
-
-            q_type = str(q.get("type") or "single").strip()
-            if q_type not in ("single", "multiple"):
-                q_type = "single"
-            text = str(q.get("text") or "").strip()
-            options = q.get("options") or []
-            correct = q.get("correct") or []
-            difficulty = str(q.get("difficulty") or "medium").strip().lower()
-            if difficulty not in DIFFICULTIES:
-                difficulty = "medium"
-            explanation = str(q.get("explanation") or "").strip()
-
-            cursor = db.execute(
-                """
-                INSERT INTO questions (
-                    topic_id, qid, type, text, options_json, correct_json, difficulty, explanation, created_by
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    topic_id,
-                    qid,
-                    q_type,
-                    text,
-                    json.dumps(options, ensure_ascii=False),
-                    json.dumps(correct, ensure_ascii=False),
-                    difficulty,
-                    explanation,
-                    g.user["id"],
-                ),
-            )
-            new_q_id = cursor.lastrowid
-            correct_set = {str(c).strip().lower() for c in correct}
-            for idx, opt in enumerate(options):
-                if isinstance(opt, dict):
-                    opt_id = str(opt.get("id") or chr(ord("a") + idx)).strip().lower()
-                    opt_text = str(opt.get("text") or "").strip()
-                else:
-                    opt_id = chr(ord("a") + idx)
-                    opt_text = str(opt).strip()
-                is_corr = 1 if opt_id in correct_set else 0
-                db.execute(
-                    """
-                    INSERT INTO options (question_id, option_id, option_text, is_correct)
-                    VALUES (?, ?, ?, ?)
-                    """,
-                    (new_q_id, opt_id, opt_text, is_corr),
-                )
-            imported_questions += 1
-
-    db.commit()
-    return jsonify(
-        {
-            "ok": True,
-            "imported_topics": imported_topics,
-            "imported_questions": imported_questions,
-            "skipped_questions": skipped_questions,
-        }
-    )
+    row = db.execute(
+        """
+        SELECT r.*, t.title as topic_title
+        FROM results r
+        JOIN topics t ON t.id = r.topic_id
+        WHERE r.id = ? AND r.user_id = ?
+        """,
+        (result_id, session["user_id"])
+    ).fetchone()
+    
+    if not row:
+        return jsonify({"error": "Result not found", "code": "RESULT_NOT_FOUND"}), 404
+    
+    review = json.loads(row["review_json"])
+    
+    return jsonify({
+        "id": row["id"],
+        "topic_id": row["topic_id"],
+        "topic_title": row["topic_title"],
+        "score": row["score"],
+        "max_score": row["max_score"],
+        "percent": row["percent"],
+        "duration_sec": row["duration_sec"],
+        "finished_at": row["finished_at"],
+        "review": review
+    })
 
 
-@app.post("/api/import/csv")
-@login_required("teacher")
-def api_import_csv():
-    """Импорт тем и вопросов из CSV-файла. Дубликаты по qid пропускаются."""
-    file = request.files.get("file")
-    if file is None:
-        return jsonify({"error": "CSV-файл не загружен."}), 400
-
-    try:
-        raw = file.read()
-        text = raw.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        return jsonify({"error": "Не удалось декодировать файл. Ожидается UTF-8."}), 400
-
-    reader = csv.DictReader(io.StringIO(text))
-
+# Teacher/admin routes
+@app.route("/api/admin/questions", methods=[GET", "POST"])
+@role_required("teacher", "admin")
+def admin_questions():
+    """List or create questions (teacher/admin only)."""
     db = get_db()
-    imported_topics = 0
-    imported_questions = 0
-    skipped_questions = 0
-    seen_topics: set[str] = set()
-
-    for row in reader:
-        topic_id = (row.get("topic_id") or "").strip()
-        topic_title = (row.get("topic_title") or "").strip()
-        if not topic_id or not topic_title:
-            continue
-
-        if topic_id not in seen_topics:
-            existing_topic = db.execute(
-                "SELECT id FROM topics WHERE id = ?", (topic_id,)
-            ).fetchone()
-            if existing_topic is None:
-                db.execute(
-                    """
-                    INSERT INTO topics (id, title, subtitle, icon, time_limit_sec, created_by)
-                    VALUES (?, ?, '', 'hash', 480, ?)
-                    """,
-                    (topic_id, topic_title, g.user["id"]),
-                )
-                imported_topics += 1
-            seen_topics.add(topic_id)
-
-        qid = (row.get("qid") or "").strip()
-        if not qid:
-            continue
-
-        existing_q = db.execute(
-            "SELECT id FROM questions WHERE qid = ?", (qid,)
-        ).fetchone()
-        if existing_q is not None:
-            skipped_questions += 1
-            continue
-
-        q_type = (row.get("type") or "single").strip()
-        if q_type not in ("single", "multiple"):
-            q_type = "single"
-
-        difficulty = (row.get("difficulty") or "medium").strip().lower()
-        if difficulty not in DIFFICULTIES:
-            difficulty = "medium"
-
-        text = (row.get("text") or "").strip()
-        explanation = (row.get("explanation") or "").strip()
-
-        options = []
-        for key in ("option_a", "option_b", "option_c", "option_d"):
-            val = (row.get(key) or "").strip()
-            if val:
-                options.append(val)
-
-        correct_raw = (row.get("correct") or "").strip()
-        correct = [c.strip().lower() for c in correct_raw.split(",") if c.strip()]
-
+    
+    if request.method == "GET":
+        topic_id = request.args.get("topic_id")
+        
+        query = """
+            SELECT q.id, q.qid, q.topic_id, q.type, q.text, q.difficulty, 
+                   q.explanation, q.bloom_level, q.created_at,
+                   t.title as topic_title
+            FROM questions q
+            JOIN topics t ON t.id = q.topic_id
+        """
+        params = []
+        
+        if topic_id:
+            query += " WHERE q.topic_id = ?"
+            params.append(topic_id)
+        
+        query += " ORDER BY q.id DESC"
+        
+        rows = db.execute(query, params).fetchall()
+        
+        return jsonify([{
+            "id": row["id"],
+            "qid": row["qid"],
+            "topic_id": row["topic_id"],
+            "topic_title": row["topic_title"],
+            "type": row["type"],
+            "text": row["text"][:100] + "..." if len(row["text"]) > 100 else row["text"],
+            "difficulty": row["difficulty"],
+            "bloom_level": row["bloom_level"],
+            "created_at": row["created_at"]
+        } for row in rows])
+    
+    else:  # POST
+        data = request.get_json() or {}
+        
+        # Validate required fields
+        topic_id = data.get("topic_id")
+        q_type = data.get("type", "single")
+        text = (data.get("text") or "").strip()
+        options = data.get("options", [])
+        correct = data.get("correct", [])
+        difficulty = data.get("difficulty", "medium")
+        explanation = (data.get("explanation") or "").strip()
+        bloom_level = data.get("bloom_level", "understand")
+        
+        if not topic_id or not text or not options or not correct:
+            return jsonify({
+                "error": "Missing required fields: topic_id, text, options, correct",
+                "code": "MISSING_FIELDS"
+            }), 400
+        
+        # Generate unique qid
+        qid = f"{topic_id}_{secrets.token_hex(4)}"
+        
+        db = get_db()
+        
+        # Insert question
         cursor = db.execute(
             """
-            INSERT INTO questions (
-                topic_id, qid, type, text, options_json, correct_json, difficulty, explanation, created_by
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO questions (topic_id, qid, type, text, options_json, correct_json, 
+                                 difficulty, explanation, bloom_level, created_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                topic_id,
-                qid,
-                q_type,
-                text,
+                topic_id, qid, q_type, text,
                 json.dumps(options, ensure_ascii=False),
                 json.dumps(correct, ensure_ascii=False),
-                difficulty,
-                explanation,
-                g.user["id"],
-            ),
+                difficulty, explanation, bloom_level,
+                session["user_id"]
+            )
         )
-        new_q_id = cursor.lastrowid
-        for idx, opt_text in enumerate(options):
-            opt_id = chr(ord("a") + idx)
-            is_corr = 1 if opt_id in correct else 0
+        
+        question_id = cursor.lastrowid
+        
+        # Insert options
+        for opt in options:
+            opt_id = opt.get("id", "")
+            opt_text = opt.get("text", "")
+            is_correct = 1 if opt_id in correct else 0
+            
             db.execute(
                 """
                 INSERT INTO options (question_id, option_id, option_text, is_correct)
                 VALUES (?, ?, ?, ?)
                 """,
-                (new_q_id, opt_id, opt_text, is_corr),
+                (question_id, opt_id, opt_text, is_correct)
             )
-        imported_questions += 1
-
-    db.commit()
-    return jsonify(
-        {
-            "ok": True,
-            "imported_topics": imported_topics,
-            "imported_questions": imported_questions,
-            "skipped_questions": skipped_questions,
-        }
-    )
+        
+        db.commit()
+        
+        return jsonify({
+            "success": True,
+            "question_id": question_id,
+            "qid": qid,
+            "message": "Question created successfully"
+        }), 201
 
 
-# ============================================================================
-# ТЕСТИРОВАНИЕ И РЕЗУЛЬТАТЫ
-# ============================================================================
-
-
-@app.post("/api/submit")
-@login_required("student")
-def api_submit():
-    payload = request.get_json(silent=True) or {}
-    topic_id = payload.get("topic_id")
-    answers = payload.get("answers") or {}
-    duration_sec = payload.get("duration_sec")
-
-    topic = get_topic(str(topic_id or ""))
-    if topic is None:
-        return jsonify({"error": "Тема не найдена"}), 404
-    if not isinstance(answers, dict):
-        return jsonify({"error": "Некорректный формат ответов"}), 400
-
-    limit = int(topic["time_limit_sec"])
-    try:
-        duration = int(duration_sec)
-    except (TypeError, ValueError):
-        duration = limit
-    duration = max(0, min(duration, limit))
-
-    review = grade_attempt(topic, {str(key): value for key, value in answers.items()})
-    max_score = len(review)
-    score = sum(1 for item in review if item["is_correct"])
-    percent = round(100.0 * score / max_score, 1) if max_score else 0.0
-    finished_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    compact_review = [
-        {
-            "id": item["id"],
-            "text": item["text"],
-            "is_correct": item["is_correct"],
-            "explanation": item.get("explanation", ""),
-            "difficulty": item.get("difficulty", "medium"),
-        }
-        for item in review
-    ]
-
+@app.route("/api/admin/stats")
+@role_required("teacher", "admin")
+def admin_stats():
+    """Get admin statistics."""
     db = get_db()
-    db.execute(
+    
+    # Total counts
+    counts = db.execute(
         """
-        INSERT INTO results (
-            user_id, topic_id, topic_title, score, max_score, percent,
-            duration_sec, finished_at, review_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            g.user["id"],
-            topic["id"],
-            topic["title"],
-            score,
-            max_score,
-            percent,
-            duration,
-            finished_at,
-            json.dumps(compact_review, ensure_ascii=False),
-        ),
-    )
-    db.commit()
-
-    return jsonify(
-        {
-            "student": g.user["username"],
-            "topic": public_topic(topic),
-            "score": score,
-            "max_score": max_score,
-            "percent": percent,
-            "duration_sec": duration,
-            "review": review,
-        }
-    )
-
-
-@app.get("/api/my-results")
-@login_required("student")
-def api_my_results():
-    rows = get_db().execute(
+        SELECT 
+            (SELECT COUNT(*) FROM users WHERE role = 'student') as student_count,
+            (SELECT COUNT(*) FROM users WHERE role = 'teacher') as teacher_count,
+            (SELECT COUNT(*) FROM topics) as topic_count,
+            (SELECT COUNT(*) FROM questions) as question_count,
+            (SELECT COUNT(*) FROM results) as result_count
         """
-        SELECT topic_title, score, max_score, percent, duration_sec, finished_at
-        FROM results
-        WHERE user_id = ?
-        ORDER BY id DESC
-        LIMIT 20
-        """,
-        (g.user["id"],),
+    ).fetchone()
+    
+    # Recent results
+    recent = db.execute(
+        """
+        SELECT r.id, r.topic_title, r.percent, r.finished_at, u.username
+        FROM results r
+        JOIN users u ON u.id = r.user_id
+        ORDER BY r.finished_at DESC
+        LIMIT 10
+        """
     ).fetchall()
-    return jsonify({"results": [dict(row) for row in rows]})
+    
+    return jsonify({
+        "counts": {
+            "students": counts["student_count"],
+            "teachers": counts["teacher_count"],
+            "topics": counts["topic_count"],
+            "questions": counts["question_count"],
+            "results": counts["result_count"]
+        },
+        "recent_results": [{
+            "id": r["id"],
+            "topic_title": r["topic_title"],
+            "percent": r["percent"],
+            "finished_at": r["finished_at"],
+            "username": r["username"]
+        } for r in recent]
+    })
 
 
-@app.get("/api/stats")
-@login_required("teacher")
-def api_stats():
-    return jsonify(build_teacher_stats())
-
-
-# ============================================================================
-# КАРТА КОМПЕТЕНЦИЙ
-# ============================================================================
-
-
-def _build_competency_data(user_id: int) -> dict[str, Any]:
-    """Общая логика анализа успеваемости студента по всем темам."""
+# Additional utility routes
+@app.route("/api/competency")
+@login_required
+def get_competency():
+    """Get user's competency map across topics."""
     db = get_db()
+    
+    # Get results by topic
     rows = db.execute(
         """
-        SELECT id, topic_id, topic_title, score, max_score, percent,
-               duration_sec, finished_at, review_json
-        FROM results
-        WHERE user_id = ?
-        ORDER BY id ASC
+        SELECT 
+            r.topic_id,
+            r.topic_title,
+            AVG(r.percent) as avg_percent,
+            COUNT(r.id) as attempt_count,
+            MAX(r.percent) as best_percent
+        FROM results r
+        WHERE r.user_id = ?
+        GROUP BY r.topic_id
         """,
-        (user_id,),
+        (session["user_id"],)
     ).fetchall()
-
-    all_topics = get_all_topics()
-
-    results_by_topic: dict[str, list[sqlite3.Row]] = {}
-    for r in rows:
-        t_id = r["topic_id"]
-        results_by_topic.setdefault(t_id, []).append(r)
-
-    topics_analysis = []
-    strengths = []
-    weaknesses = []
-    declining_topics = []
-    improving_topics = []
-
-    for topic in all_topics:
-        t_id = topic["id"]
-        t_title = topic["title"]
-        t_results = results_by_topic.get(t_id, [])
-        attempts = len(t_results)
-
-        if attempts > 0:
-            avg_percent = round(
-                sum(float(r["percent"]) for r in t_results) / attempts, 1
-            )
-
-            if attempts < 2:
-                trend = "new"
-            else:
-                mid = attempts // 2
-                first_half = t_results[:mid]
-                second_half = t_results[mid:]
-                avg_first = sum(float(r["percent"]) for r in first_half) / len(first_half)
-                avg_second = sum(float(r["percent"]) for r in second_half) / len(second_half)
-                diff = avg_second - avg_first
-                if diff >= 5.0:
-                    trend = "improving"
-                    improving_topics.append(t_title)
-                elif diff <= -5.0:
-                    trend = "declining"
-                    declining_topics.append(t_title)
-                else:
-                    trend = "stable"
-
-            if avg_percent >= 80.0:
-                level = "excellent"
-                strengths.append(t_title)
-            elif avg_percent >= 60.0:
-                level = "good"
-            elif avg_percent >= 40.0:
-                level = "attention"
-                weaknesses.append(t_title)
-            else:
-                level = "weak"
-                weaknesses.append(t_title)
-
-            missed_map: dict[str, dict[str, Any]] = {}
-            for r in t_results:
-                try:
-                    items = json.loads(r["review_json"])
-                except Exception:
-                    items = []
-                for item in items:
-                    if not item.get("is_correct"):
-                        qid = item.get("id", "")
-                        if qid not in missed_map:
-                            missed_map[qid] = {
-                                "id": qid,
-                                "text": item.get("text", qid),
-                                "count": 0,
-                            }
-                        missed_map[qid]["count"] += 1
-
-            worst_questions = sorted(
-                missed_map.values(),
-                key=lambda x: x["count"],
-                reverse=True,
-            )[:3]
+    
+    topics = []
+    for row in rows:
+        avg = round(row["avg_percent"], 1)
+        best = round(row["best_percent"], 1)
+        
+        # Determine level
+        if best >= 80:
+            level = "excellent"
+        elif best >= 60:
+            level = "good"
+        elif best >= 40:
+            level = "attention"
         else:
-            avg_percent = 0.0
-            trend = "new"
             level = "weak"
-            worst_questions = []
-
-        topics_analysis.append(
-            {
-                "id": t_id,
-                "title": t_title,
-                "attempts": attempts,
-                "percent": avg_percent,
-                "trend": trend,
-                "level": level,
-                "worst_questions": worst_questions,
-            }
-        )
-
-    total_attempts = len(rows)
-    overall_percent = (
-        round(sum(float(r["percent"]) for r in rows) / total_attempts, 1)
-        if total_attempts > 0
-        else 0.0
-    )
-
-    recommendations = []
-    if total_attempts == 0:
-        recommendations.append(
-            "Ещё нет ни одной попытки. Нужно пройти хотя бы один тест!"
-        )
+        
+        # Determine trend
+        if avg >= best * 0.95:
+            trend = "stable"
+        elif avg < best * 0.8:
+            trend = "improving" if best > avg else "declining"
+        else:
+            trend = "stable"
+        
+        topics.append({
+            "topic_id": row["topic_id"],
+            "topic_title": row["topic_title"],
+            "avg_percent": avg,
+            "best_percent": best,
+            "attempt_count": row["attempt_count"],
+            "level": level,
+            "trend": trend
+        })
+    
+    # Calculate overall score
+    if topics:
+        overall = round(sum(t["best_percent"] for t in topics) / len(topics), 1)
     else:
-        if weaknesses:
-            recommendations.append(
-                f"Рекомендуется повторить западающие темы: {', '.join(weaknesses)}."
-            )
-        if declining_topics:
-            recommendations.append(
-                f"Обратите внимание на снижение результатов: {', '.join(declining_topics)}."
-            )
-        if improving_topics:
-            recommendations.append(
-                f"Отличная положительная динамика: {', '.join(improving_topics)}!"
-            )
-        if strengths and not weaknesses:
-            recommendations.append(
-                "Превосходный уровень знаний! Закрепляйте результат новыми попытками."
-            )
-        untested = [t["title"] for t in topics_analysis if t["attempts"] == 0]
-        if untested:
-            recommendations.append(
-                f"Не забудьте проверить знания по: {', '.join(untested[:3])}."
-            )
-
-    return {
-        "topics": topics_analysis,
+        overall = 0
+    
+    # Generate recommendations
+    recommendations = []
+    weak_topics = [t for t in topics if t["level"] in ["weak", "attention"]]
+    
+    if weak_topics:
+        weak_names = ", ".join([t["topic_title"] for t in weak_topics[:3]])
+        recommendations.append(f"Уделите внимание темам: {weak_names}")
+    
+    if any(t["trend"] == "declining" for t in topics):
+        recommendations.append("Ваши результаты снижаются. Рекомендуем повторение.")
+    
+    if not recommendations:
+        recommendations.append("Отличная работа! Продолжайте в том же духе.")
+    
+    return jsonify({
+        "overall_score": overall,
+        "topics": topics,
         "recommendations": recommendations,
-        "overall_percent": overall_percent,
-        "total_attempts": total_attempts,
-        "strengths": strengths,
-        "weaknesses": weaknesses,
-    }
+        "strengths": [t["topic_title"] for t in topics if t["level"] == "excellent"],
+        "weaknesses": [t["topic_title"] for t in weak_topics]
+    })
 
 
-@app.get("/api/competency-map")
-@login_required("student")
-def api_competency_map():
-    """Анализ успеваемости текущего студента по всем темам."""
-    return jsonify(_build_competency_data(g.user["id"]))
-
-
-@app.get("/api/student-competency/<int:student_id>")
-@login_required("teacher")
-def api_student_competency(student_id: int):
-    """Анализ успеваемости конкретного ученика (для преподавателя)."""
-    db = get_db()
-    student = db.execute(
-        "SELECT id, username, role FROM users WHERE id = ?",
-        (student_id,),
-    ).fetchone()
-    if student is None:
-        return jsonify({"error": "Пользователь не найден."}), 404
-    if student["role"] != "student":
-        return jsonify({"error": "Этот пользователь не является учеником."}), 400
-
-    data = _build_competency_data(student_id)
-    data["username"] = student["username"]
-    return jsonify(data)
+# Teacher invite code route
+@app.route("/api/teacher-invite")
+@role_required("admin")
+def get_teacher_invite():
+    """Get teacher invite code (admin only)."""
+    return jsonify({
+        "invite_code": TEACHER_INVITE_CODE,
+        "env_variable": "TEACHER_INVITE_CODE"
+    })
 
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5000, debug=True)
+    debug_mode = os.getenv("FLASK_DEBUG", "0") == "1"
+    app.run(host="0.0.0.0", port=5000, debug=debug_mode)
